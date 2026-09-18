@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: experiment-go
+  namespace: experiment-go
+spec:
+  template:
+    spec:
+      initContainers:
+        # Native sidecar (restartPolicy: Always): starts before the API and is
+        # torn down after it, so the app never races the proxy at boot.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.1
+          restartPolicy: Always
+          args:
+            - "--port=5432"
+            - "--structured-logs"
+            - "--exit-zero-on-sigterm"
+            - "--health-check"
+            - "--http-address=0.0.0.0"
+            - "--http-port=9801"
+            - "$(INSTANCE_CONNECTION_NAME)"
+          env:
+            - name: INSTANCE_CONNECTION_NAME
+              value: SQL_INSTANCE_PLACEHOLDER
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 9801
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 9801
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

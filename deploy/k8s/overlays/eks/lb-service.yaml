@@ -1,0 +1,20 @@
+# Public address: a Network Load Balancer provisioned by the EKS cloud controller
+# from the annotation (~$18/month while it exists). Free alternative:
+# `make k8s-forward CLOUD=aws`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: experiment-go-lb
+  namespace: experiment-go
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: experiment-go
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

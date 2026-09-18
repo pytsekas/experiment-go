@@ -1,0 +1,47 @@
+# Runs k6 inside the cluster, so the numbers are not limited by your home
+# uplink and the traffic never leaves the VPC. The scripts come from a ConfigMap
+# created by `make loadtest-cluster`:
+#
+#   kubectl -n experiment-go create configmap k6-scripts --from-file=loadtest/k6/
+#
+# Change the script/env with the SCRIPT and K6_ARGS placeholders, then:
+#   kubectl -n experiment-go logs -f job/k6
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6
+  namespace: experiment-go
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k6
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:2.1.0
+          args: ["run", "/scripts/SCRIPT_PLACEHOLDER"]
+          env:
+            # In-cluster address of the API service.
+            - name: BASE_URL
+              value: "http://experiment-go.experiment-go.svc.cluster.local"
+            - name: RATE
+              value: "RATE_PLACEHOLDER"
+            - name: DURATION
+              value: "DURATION_PLACEHOLDER"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-scripts

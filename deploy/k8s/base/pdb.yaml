@@ -1,0 +1,13 @@
+# Keeps at least one pod serving while nodes are drained (node upgrades, spot
+# preemption, `kubectl drain` experiments).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: experiment-go
+  namespace: experiment-go
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: experiment-go
+      app.kubernetes.io/component: api

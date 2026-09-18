@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is gitignored.
+# Credentials come from the aws CLI (aws configure / AWS_PROFILE), never from here.
+region = "eu-north-1"
+name   = "experiment-go"
+
+# Layer toggles are managed by make via *.auto.tfvars (db.auto.tfvars,
+# serverless.auto.tfvars, k8s.auto.tfvars). Set them here only when driving
+# terraform manually.
+# create_db  = true
+# image      = "123456789012.dkr.ecr.eu-north-1.amazonaws.com/experiment-go:TAG"
+# create_k8s = true

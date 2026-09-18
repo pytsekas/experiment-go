@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: experiment-go-config
+  namespace: experiment-go
+data:
+  APP_ENV: "production"
+  HTTP_PORT: "8080"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+
+  # POSTGRES_HOST and POSTGRES_SSLMODE are set by the overlay: GKE talks to the
+  # Cloud SQL Auth Proxy sidecar on localhost, EKS talks to RDS directly with TLS.
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "app"
+  POSTGRES_DB: "experiment"
+
+  # Migrations run as a Job, not on pod startup: with several replicas you want
+  # schema changes to be one explicit, observable step.
+  MIGRATE_ON_START: "false"
+
+  # Per-pod pool size. Watch the total: DB_MAX_CONNS x replicas must stay below
+  # the instance's max_connections (db-f1-micro and db.t4g.micro allow ~25-80).
+  DB_MAX_CONNS: "5"
+  DB_MIN_CONNS: "1"
+
+  # CPU sink for autoscaling experiments. Turn it off when you are done playing.
+  ENABLE_BURN_ENDPOINT: "true"

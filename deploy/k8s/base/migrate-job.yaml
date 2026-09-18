@@ -1,0 +1,41 @@
+# Schema migrations as an explicit, observable step: same image as the API,
+# invoked as `api migrate up`. The GKE overlay adds the Cloud SQL proxy as a native sidecar.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: experiment-go-migrate
+  namespace: experiment-go
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: experiment-go
+        app.kubernetes.io/component: migrate
+    spec:
+      serviceAccountName: experiment-go
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: IMAGE_PLACEHOLDER
+          args: ["migrate", "up"]
+          envFrom:
+            - configMapRef:
+                name: experiment-go-config
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: experiment-go-db
+                  key: password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

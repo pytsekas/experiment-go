@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: experiment-go
+  namespace: experiment-go
+  labels:
+    app.kubernetes.io/name: experiment-go
+spec:
+  # The HPA owns this number once it is applied; 2 is the starting point.
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: experiment-go
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: experiment-go
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: experiment-go
+      terminationGracePeriodSeconds: 30
+      # Spread replicas over zones/nodes when there is more than one.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: experiment-go
+      containers:
+        - name: api
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: experiment-go-config
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: experiment-go-db
+                  key: password
+          # /healthz never touches the database: a database blip must not get
+          # healthy pods killed. /readyz does, so traffic drains instead.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          lifecycle:
+            preStop:
+              exec:
+                # Keep serving while kube-proxy/the load balancer notices the pod
+                # is going away — this is what removes 502s from rollout graphs.
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              # No CPU limit on purpose: with a limit, CPU throttling muddies
+              # every latency measurement you are about to take.
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

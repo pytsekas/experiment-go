@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS tasks_done_idx;
+
+DROP TABLE IF EXISTS tasks;

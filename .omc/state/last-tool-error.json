@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"grep -n -i -A8 'teardown\\\\|destroy' Makefile; echo ---; ls deploy/terraform; echo ---; cat deploy/terraform/run.auto.tfvars\",\"description\":\"Show teardown targets, terraform files and tfvar...",
+  "error": "Exit code 1\n474:.PHONY: teardown-run\n475:teardown-run: ## Terraform: delete the Cloud Run service\n476-\trm -f $(TF_DIR)/run.auto.tfvars\n477-\t$(TF_APPLY)\n478-\n479:.PHONY: teardown-gke\n480:teardown-gke: ## Terraform: delete the GKE cluster (stops the $0.10/h cluster fee)\n481-\trm -f $(TF_DIR)/gke.auto.tfvars\n482-\t$(TF_APPLY)\n483-\n484:.PHONY: teardown-sql\n485:teardown-sql: ## Terraform: delete the Cloud SQL instance (irreversible; teardown-run first)\n486-\trm -f $(TF_DIR)/sql.auto.tfvars\n487-\t$(TF_APP...",
+  "timestamp": "2026-08-30T14:45:59.233Z",
+  "retry_count": 1
+}

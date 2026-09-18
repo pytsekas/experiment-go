@@ -1,0 +1,15 @@
+# Internal address for in-cluster clients (the k6 Job uses this).
+apiVersion: v1
+kind: Service
+metadata:
+  name: experiment-go
+  namespace: experiment-go
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: experiment-go
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,20 @@
+# Public address: a network load balancer with an external IP (~$18/month while
+# it exists, so delete it when you are done). Skip this and use
+# `kubectl port-forward svc/experiment-go 8080:80` if you want it free.
+apiVersion: v1
+kind: Service
+metadata:
+  name: experiment-go-lb
+  namespace: experiment-go
+  annotations:
+    cloud.google.com/l4-rbs: "enabled"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: experiment-go
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

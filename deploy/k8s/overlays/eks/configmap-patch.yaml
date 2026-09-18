@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: experiment-go-config
+  namespace: experiment-go
+data:
+  # RDS is reached directly over the VPC; the cluster security group is allowed in
+  # by Terraform. RDS Postgres 15+ forces TLS (rds.force_ssl=1), hence require.
+  POSTGRES_HOST: "RDS_HOST_PLACEHOLDER"
+  POSTGRES_SSLMODE: "require"

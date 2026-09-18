@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and set project_id. terraform.tfvars is gitignored.
+# The make targets pass these as -var flags, so this file is only needed when
+# running terraform by hand.
+project_id = "your-gcp-project"
+region     = "europe-north1"
+zone       = "europe-north1-b"
+
+# Layer toggles are managed by make via *.auto.tfvars (db.auto.tfvars,
+# serverless.auto.tfvars, k8s.auto.tfvars). Set them here only when driving
+# terraform manually.
+# create_db  = true
+# image      = "europe-north1-docker.pkg.dev/PROJECT/containers/experiment-go:TAG"
+# create_k8s = true

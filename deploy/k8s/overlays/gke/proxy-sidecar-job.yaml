@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: experiment-go-migrate
+  namespace: experiment-go
+spec:
+  template:
+    spec:
+      initContainers:
+        # Native sidecar: Kubernetes shuts it down once the migration container
+        # exits, so the Job can actually complete.
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.22.1
+          restartPolicy: Always
+          args:
+            - "--port=5432"
+            - "--structured-logs"
+            - "--exit-zero-on-sigterm"
+            - "$(INSTANCE_CONNECTION_NAME)"
+          env:
+            - name: INSTANCE_CONNECTION_NAME
+              value: SQL_INSTANCE_PLACEHOLDER
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

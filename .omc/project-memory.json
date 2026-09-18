@@ -1,0 +1,203 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1788685268929,
+  "projectRoot": "/Users/markoputsep/work/projects/experiment-go",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      },
+      {
+        "name": "C/C++",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Makefile"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "make build",
+    "testCommand": "make test",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "_to_delete": {
+      "path": "_to_delete",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1788685268888,
+      "keyFiles": [
+        "scaffold-v2.tgz",
+        "scaffold-v3.tgz",
+        "scaffold-v4.tgz"
+      ]
+    },
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1788685268888,
+      "keyFiles": []
+    },
+    "deploy": {
+      "path": "deploy",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1788685268888,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1788685268889,
+      "keyFiles": []
+    },
+    "loadtest": {
+      "path": "loadtest",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1788685268889,
+      "keyFiles": []
+    },
+    "migrations": {
+      "path": "migrations",
+      "purpose": "Database migrations",
+      "fileCount": 3,
+      "lastAccessed": 1788685268890,
+      "keyFiles": [
+        "000001_create_tasks_table.down.sql",
+        "000001_create_tasks_table.up.sql",
+        "embed.go"
+      ]
+    },
+    "cmd/api": {
+      "path": "cmd/api",
+      "purpose": "API routes",
+      "fileCount": 2,
+      "lastAccessed": 1788685268890,
+      "keyFiles": [
+        "main.go",
+        "migrate.go"
+      ]
+    },
+    "internal/config": {
+      "path": "internal/config",
+      "purpose": "Configuration files",
+      "fileCount": 2,
+      "lastAccessed": 1788685268890,
+      "keyFiles": [
+        "config.go",
+        "config_test.go"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "Makefile",
+      "accessCount": 10,
+      "lastAccessed": 1787121316027,
+      "type": "file"
+    },
+    {
+      "path": "deploy/README.md",
+      "accessCount": 8,
+      "lastAccessed": 1787121374176,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/variables.tf",
+      "accessCount": 3,
+      "lastAccessed": 1787121202473,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/terraform.tfvars.example",
+      "accessCount": 3,
+      "lastAccessed": 1787121387865,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/main.tf",
+      "accessCount": 2,
+      "lastAccessed": 1787120318763,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/apis.tf",
+      "accessCount": 2,
+      "lastAccessed": 1787120320156,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/README.md",
+      "accessCount": 2,
+      "lastAccessed": 1787121418283,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/cloudrun.tf",
+      "accessCount": 2,
+      "lastAccessed": 1788099818289,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/cloudsql.tf",
+      "accessCount": 2,
+      "lastAccessed": 1788099827962,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/artifactregistry.tf",
+      "accessCount": 1,
+      "lastAccessed": 1787121204470,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/gke.tf",
+      "accessCount": 1,
+      "lastAccessed": 1787121216457,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/iam.tf",
+      "accessCount": 1,
+      "lastAccessed": 1787121219307,
+      "type": "file"
+    },
+    {
+      "path": "deploy/terraform/outputs.tf",
+      "accessCount": 1,
+      "lastAccessed": 1787121231848,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
