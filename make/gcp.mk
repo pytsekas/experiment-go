@@ -24,6 +24,12 @@ AR_REPO        ?= containers
 IMAGE_BASE      = $(REGION)-docker.pkg.dev/$(PROJECT_ID)/$(AR_REPO)/$(APP_NAME)
 IMAGE          ?= $(IMAGE_BASE):$(VERSION)
 
+# Defaults match the Terraform variables of the same purpose (ingest_topic,
+# modules/warehouse's dataset_id), so the wrappers below query and publish to
+# exactly what `make ingest-deploy` creates.
+INGEST_TOPIC   ?= energy-consumption
+BQ_DATASET     ?= energy
+
 # Resource names derive from APP_NAME exactly like the Terraform modules do.
 SQL_INSTANCE    = $(APP_NAME)-pg
 SQL_CONN        = $(PROJECT_ID):$(REGION):$(SQL_INSTANCE)
@@ -33,6 +39,7 @@ SQL_USER       ?= app
 SQL_PASSWORD_CMD = gcloud secrets versions access latest --secret=$(APP_NAME)-db-password --project=$(PROJECT_ID)
 
 RUN_SERVICE     = $(APP_NAME)
+INGEST_SERVICE  = $(APP_NAME)-ingest
 GKE_CLUSTER     = $(APP_NAME)
 GKE_NODES      ?= 2
 GKE_MACHINE    ?= e2-standard-2
@@ -139,3 +146,47 @@ teardown-all: ## Delete everything billable on GCP (one terraform apply)
 	$(TF_APPLY)
 	@echo "left in place: APIs + Artifact Registry images (a few cents/month)"
 	@echo "  full wipe including the repo: $(TF) destroy $(TF_VARS)"
+	@echo "  ingest (if deployed) is NOT included — see deploy/README.md's Ingest phase"
+
+## ---------------------------------------------------------------- ingest
+# The readings table ships with deletion_protection = true (modules/warehouse),
+# so unlike create_db/create_k8s this layer has no teardown-* target yet:
+# teardown-all does not touch it. See deploy/README.md's Ingest phase for how
+# to remove it by hand.
+
+.PHONY: ingest-deploy
+ingest-deploy: ## Terraform: ingest service, Pub/Sub subscription and BigQuery dataset (needs image-push first)
+	@echo 'create_ingest = true' > $(TF_DIR)/ingest.auto.tfvars
+	$(TF_APPLY)
+
+.PHONY: ingest-publish
+ingest-publish: ## Publish a document: make ingest-publish file=path/to.xml
+	@test -n "$(file)" || { echo "usage: make ingest-publish file=<path>"; exit 1; }
+	gcloud pubsub topics publish $(INGEST_TOPIC) \
+		--project=$(PROJECT_ID) \
+		--message="$$(cat $(file))"
+
+.PHONY: ingest-smoke
+ingest-smoke: ## Publish the golden file under a fresh run id and wait for its rows
+	@set -euo pipefail; \
+	id="smoke-$$(date +%s)"; \
+	sed -e "s|<mRID>doc-1</mRID>|<mRID>$$id</mRID>|" \
+	    -e "s|EE-METER-1|$$id-1|" -e "s|EE-METER-2|$$id-2|" \
+	    internal/consumption/xmlfmt/testdata/esmp-valid.xml > /tmp/$$id.xml; \
+	$(MAKE) --no-print-directory ingest-publish file=/tmp/$$id.xml; \
+	echo "published $$id, waiting for its rows..."; \
+	for i in $$(seq 1 30); do \
+		n=$$(bq --project_id=$(PROJECT_ID) query --nouse_legacy_sql --format=csv \
+			"SELECT COUNT(*) FROM \`$(BQ_DATASET).readings\` WHERE metering_point_id IN ('$$id-1','$$id-2')" \
+			| tail -1); \
+		if [ "$$n" -ge 6 ]; then echo "$$n rows present for $$id"; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo "no rows for $$id after 60s — check: gcloud run services logs read $(INGEST_SERVICE) --project=$(PROJECT_ID) --region=$(REGION)"; \
+	exit 1
+
+.PHONY: bq-readings
+bq-readings: ## Query ingest's deduplicated readings view
+	bq --project_id=$(PROJECT_ID) query --nouse_legacy_sql \
+		"SELECT metering_point_id, interval_start, value, unit, quality, direction \
+		 FROM \`$(BQ_DATASET).readings_current\` ORDER BY interval_start DESC LIMIT 20"
