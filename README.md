@@ -6,9 +6,14 @@ dependencies, pgx for Postgres with migrations embedded in the binary via
 logging with `log/slog`, graceful shutdown, and a Docker / docker-compose setup driven
 entirely from the `Makefile`.
 
+The same image also has a deployment path to Google Cloud and AWS (Terraform for the
+infrastructure, kustomize for Kubernetes, k6 for load tests) and a release workflow that
+turns a `v*` tag into cross-compiled binaries and a multi-arch image on GHCR.
+
 ## Quick start
 
-Everything runs in containers — you only need Docker and `make`.
+Everything runs in containers — you only need Docker and `make`. Go 1.25+ on the host is
+optional, and only needed for `make run`, `make build` and `make test`.
 
 ```bash
 make init   # creates .env from .env.example, downloads modules
@@ -33,11 +38,11 @@ make run     # run the API on the host with text logs and debug level
 | ------ | -------------------- | --------------------------------------------- |
 | GET    | `/healthz`           | Liveness — never touches the database         |
 | GET    | `/readyz`            | Readiness — pings Postgres, 503 when it's out |
-| GET    | `/api/v1/tasks`      | List tasks (`?limit=20&offset=0`)             |
-| POST   | `/api/v1/tasks`      | Create a task                                 |
+| GET    | `/api/v1/tasks`      | List tasks, newest first (`?limit=20&offset=0`, max 100) |
+| POST   | `/api/v1/tasks`      | Create a task — 201                           |
 | GET    | `/api/v1/tasks/:id`  | Fetch one task                                |
-| PUT    | `/api/v1/tasks/:id`  | Replace a task                                |
-| DELETE | `/api/v1/tasks/:id`  | Delete a task                                 |
+| PUT    | `/api/v1/tasks/:id`  | Replace a task (`title` and `done`)           |
+| DELETE | `/api/v1/tasks/:id`  | Delete a task — 204                           |
 | GET    | `/api/v1/burn?ms=N`  | Burns CPU for N ms — only when `ENABLE_BURN_ENDPOINT=true` |
 
 ```bash
@@ -46,9 +51,18 @@ curl -s localhost:8080/api/v1/tasks \
   -d '{"title":"ship the microservice"}'
 ```
 
-Successful responses are wrapped in `{"data": ...}`, errors in `{"error": "..."}`.
-Every response carries an `X-Request-ID` header (echoed from the request when present)
-which also appears in the log line for that request.
+```json
+{"data":{"id":1,"title":"ship the microservice","done":false,
+         "created_at":"2026-09-19T08:12:03Z","updated_at":"2026-09-19T08:12:03Z"}}
+```
+
+Successful `/api/v1` responses are wrapped in `{"data": ...}` and errors in
+`{"error": "..."}` — a blank or over-long title is a 400, an unknown id a 404, and an
+unparsable id a 400. The health probes are outside the envelope: `/healthz` returns
+`{"status":"ok","version":"..."}` and `/readyz` returns `{"status":"ready"}` or a 503
+naming the dependency that is down. Every response carries an `X-Request-ID` header
+(echoed from the request when present) which also appears in the log line for that
+request.
 
 ## Layout
 
@@ -64,6 +78,10 @@ migrations/               SQL files + embed.go (//go:embed *.sql)
 deploy/terraform/         Terraform: gcp/ and aws/ roots with the same contract (see deploy/terraform/README.md)
 deploy/k8s/               kustomize base + overlays/gke + overlays/eks
 make/                     gcp.mk, aws.mk, k8s.mk included by the Makefile
+loadtest/k6/              k6 scripts (smoke, load, stress) + a Job to run them in-cluster
+.github/workflows/        ci.yml (every push and PR) and release.yml (v* tags)
+.claude/skills/           rest-endpoint: the house rules for changing the HTTP surface
+docs/                     design notes and plans kept alongside the code
 ```
 
 Requests flow handler → `task.Service` → `task.Repository` → Postgres. The service owns
@@ -72,6 +90,11 @@ the repository owns SQL. Both are interfaces, so the handlers are tested with a 
 service (`internal/httpapi/tasks_test.go`) and the service with a stub repository
 (`internal/task/service_test.go`), neither needing a database. Add a new resource by
 copying the `task` package and registering its handlers in `internal/httpapi/router.go`.
+
+Two documents go deeper than this README: `AGENTS.md` is the working brief for the repo
+(conventions, invariants, where each thing lives), and `.claude/skills/rest-endpoint/`
+walks through adding an endpoint or a whole resource — which layer owns what, how errors
+map to status codes, and which tests and doc tables have to move with the change.
 
 ## Make targets
 
@@ -107,13 +130,20 @@ All configuration comes from the environment (see `.env.example`). `make up` and
 | Variable                 | Default       | Notes                                     |
 | ------------------------ | ------------- | ----------------------------------------- |
 | `APP_ENV`                | `development` | `production` puts Gin in release mode      |
+| `HTTP_HOST`              | `0.0.0.0`     | Listen address                             |
 | `HTTP_PORT`              | `8080`        |                                            |
+| `HTTP_READ_TIMEOUT`      | `10s`         |                                            |
+| `HTTP_WRITE_TIMEOUT`     | `15s`         |                                            |
+| `HTTP_IDLE_TIMEOUT`      | `60s`         |                                            |
 | `HTTP_SHUTDOWN_TIMEOUT`  | `15s`         | Drain window for in-flight requests        |
 | `LOG_LEVEL`              | `info`        | `debug` / `info` / `warn` / `error`        |
 | `LOG_FORMAT`             | `json`        | `json` for prod, `text` for local reading  |
 | `DATABASE_URL`           | —             | Full DSN; wins over the `POSTGRES_*` vars  |
 | `POSTGRES_HOST/PORT/USER/PASSWORD/DB` | — | Used to compose the DSN               |
-| `DB_MAX_CONNS`           | `10`          | pgx pool size                              |
+| `POSTGRES_SSLMODE`       | `disable`     | Set it for anything but a local database   |
+| `DB_MAX_CONNS` / `DB_MIN_CONNS` | `10` / `1` | pgx pool bounds                        |
+| `DB_MAX_CONN_LIFETIME`   | `1h`          | Recycle connections after this long        |
+| `DB_CONNECT_TIMEOUT`     | `10s`         | Startup ping budget                        |
 | `MIGRATE_ON_START`       | `false`       | Apply migrations on boot; compose sets it  |
 | `ENABLE_BURN_ENDPOINT`   | `false`       | Exposes the CPU-burn endpoint for load tests |
 
@@ -245,6 +275,33 @@ make teardown-all                  # stop paying for all of it    (AWS: make aws
 
 ## CI
 
-`.github/workflows/ci.yml` checks tidiness, formatting, `go vet`, golangci-lint and
-race-enabled tests, then builds the Docker image with layer caching and asserts the
-binary exits non-zero when required configuration is missing.
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request. It
+checks tidiness, formatting, `go vet`, golangci-lint and race-enabled tests, then builds
+the Docker image with layer caching and asserts the binary exits non-zero when required
+configuration is missing. `make check` runs the same lint-and-test half locally.
+
+## Releases
+
+`.github/workflows/release.yml` turns a version tag into a release:
+
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+That publishes
+
+- **binaries** for `linux/amd64`, `linux/arm64`, `darwin/amd64` and `darwin/arm64`, built
+  with `make build` so the `-trimpath` and version ldflags stay defined in one place,
+  packed as `experiment-go_<version>_<os>_<arch>.tar.gz` with a `SHA256SUMS` file;
+- a **multi-arch image** (`linux/amd64,linux/arm64`) as
+  `ghcr.io/<owner>/experiment-go:<version>` and `:latest`;
+- a **GitHub Release** with generated notes, the archives and the image reference.
+
+A tag containing a hyphen (`v1.2.3-rc.1`) is published as a pre-release. Running the
+workflow manually (`workflow_dispatch`) builds everything under a throwaway
+`0.0.0-dev.<run>` version and publishes nothing — that is how to test a change to the
+workflow without cutting a tag. The linux/amd64 binary is smoke-tested in the workflow
+the same way the image is in CI: started with no database, it must exit non-zero.
+
+Locally, `make build` stamps the version from `git describe --tags --always --dirty`, so
+`api` and `/healthz` report the same version string the release does.
