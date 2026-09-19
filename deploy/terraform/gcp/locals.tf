@@ -28,6 +28,13 @@ locals {
   # depend on the service's own output, a dependency cycle Terraform cannot
   # resolve. The same constant is passed as the service's custom_audiences
   # and as the messaging module's audience, so all three agree.
+  # HTTP_READ_TIMEOUT/HTTP_WRITE_TIMEOUT raise the shared http.Server's
+  # defaults (10s/15s) to match the design's 60s ack deadline: the write
+  # timeout covers the whole read-parse-append-respond cycle, so it has to
+  # clear the ack deadline with room for a large document, not just equal it.
+  # The Cloud Run service's own request timeout is set above this in
+  # main.tf, or a large document's response would never leave the instance
+  # before Cloud Run itself cuts the request off.
   ingest_env = var.create_ingest && var.image != "" ? {
     APP_ENV                     = "production"
     LOG_FORMAT                  = "json"
@@ -38,5 +45,7 @@ locals {
     BQ_DATASET                  = module.warehouse[0].dataset_id
     BQ_TABLE                    = module.warehouse[0].table_id
     QUARANTINE_BUCKET           = google_storage_bucket.quarantine[0].name
+    HTTP_READ_TIMEOUT           = "60s"
+    HTTP_WRITE_TIMEOUT          = "120s"
   } : {}
 }

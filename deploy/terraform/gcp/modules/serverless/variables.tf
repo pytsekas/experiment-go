@@ -90,3 +90,9 @@ variable "concurrency" {
   type        = number
   default     = 80
 }
+
+variable "request_timeout_seconds" {
+  description = "Max time Cloud Run waits for a response before considering the request failed; 300 reproduces the provider's own default"
+  type        = number
+  default     = 300
+}

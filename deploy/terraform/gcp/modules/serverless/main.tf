@@ -50,6 +50,7 @@ resource "google_cloud_run_v2_service" "api" {
   template {
     service_account                  = local.service_account_email
     max_instance_request_concurrency = var.concurrency
+    timeout                          = "${var.request_timeout_seconds}s"
 
     scaling {
       min_instance_count = var.min_instances # 0 = scale to zero, cold starts when not idle

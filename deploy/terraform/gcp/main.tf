@@ -157,6 +157,10 @@ module "ingest_service" {
   memory                = var.ingest_memory
   concurrency           = 1 # parsing is CPU-bound: one request at a time per instance
 
+  # Above local.ingest_env's HTTP_WRITE_TIMEOUT (120s): Cloud Run must not cut
+  # the request off before the handler itself times out and responds.
+  request_timeout_seconds = 180
+
   depends_on = [module.registry, module.warehouse]
 }
 
