@@ -1,0 +1,146 @@
+name: Release
+
+# Cuts a release from a version tag: cross-compiled binaries attached to the
+# GitHub Release, plus a multi-arch image on GHCR.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# Running it manually (workflow_dispatch) builds everything but publishes
+# nothing, which is the way to check a change to this file without cutting a tag.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25"
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Tag runs are the real thing; manual runs get a throwaway version and skip publishing.
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-dev.{0}', github.run_number) }}
+  PUBLISH: ${{ github.ref_type == 'tag' }}
+
+jobs:
+  binaries:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Same flags as a local `make build` — the Makefile stays the single
+      # source of truth for -trimpath and the version ldflag.
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: make build BIN_DIR=dist BIN=dist/api VERSION="$VERSION"
+
+      # The runner is linux/amd64, so that build is the one we can actually
+      # execute. With no database configured it must fail fast, as the image
+      # does in CI.
+      - name: Smoke test the binary
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          if dist/api; then
+            echo "expected a non-zero exit without a database configured" && exit 1
+          fi
+
+      - name: Archive
+        run: tar -czf "experiment-go_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" -C dist api
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: experiment-go_*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # linux/arm64 is built under emulation: the Dockerfile compiles for the
+      # container's own architecture, so the arm64 leg is slower than the rest.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: GitHub Release
+    needs: [binaries, image]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum experiment-go_*.tar.gz > SHA256SUMS
+
+      # A tag with a hyphen (v1.2.3-rc.1) is a pre-release.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$VERSION" dist/* \
+            --title "$VERSION" \
+            --generate-notes \
+            --notes "Image: \`${IMAGE}:${VERSION}\`" \
+            $prerelease
