@@ -167,13 +167,19 @@ ingest-publish: ## Publish a document: make ingest-publish file=path/to.xml
 		--message="$$(cat $(file))"
 
 .PHONY: ingest-smoke
+# Publishes inline rather than recursing into ingest-publish: a recipe line
+# that mentions $(MAKE) is executed by GNU Make even under `make -n`, so a
+# preview of this target would otherwise publish for real. Duplicating the
+# one gcloud call keeps `make -n ingest-smoke` an honest dry run.
 ingest-smoke: ## Publish the golden file under a fresh run id and wait for its rows
 	@set -euo pipefail; \
 	id="smoke-$$(date +%s)"; \
 	sed -e "s|<mRID>doc-1</mRID>|<mRID>$$id</mRID>|" \
 	    -e "s|EE-METER-1|$$id-1|" -e "s|EE-METER-2|$$id-2|" \
 	    internal/consumption/xmlfmt/testdata/esmp-valid.xml > /tmp/$$id.xml; \
-	$(MAKE) --no-print-directory ingest-publish file=/tmp/$$id.xml; \
+	gcloud pubsub topics publish $(INGEST_TOPIC) \
+		--project=$(PROJECT_ID) \
+		--message="$$(cat /tmp/$$id.xml)"; \
 	echo "published $$id, waiting for its rows..."; \
 	for i in $$(seq 1 30); do \
 		n=$$(bq --project_id=$(PROJECT_ID) query --nouse_legacy_sql --format=csv \
