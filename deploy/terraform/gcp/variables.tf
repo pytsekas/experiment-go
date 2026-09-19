@@ -128,3 +128,47 @@ variable "registry_repo" {
   type        = string
   default     = "containers"
 }
+
+# ---------------------------------------------------------------- ingest
+
+variable "create_ingest" {
+  description = "Create the ingest service, its Pub/Sub subscription and the BigQuery warehouse"
+  type        = bool
+  default     = false
+}
+
+variable "ingest_topic" {
+  description = "Topic carrying the consumption documents"
+  type        = string
+  default     = "energy-consumption"
+}
+
+variable "ingest_create_topic" {
+  description = "Create the topic instead of referencing one another system owns"
+  type        = bool
+  default     = true
+}
+
+variable "ingest_topic_project" {
+  description = "GCP project that owns the upstream topic, when another system publishes it in a different project; empty uses project_id"
+  type        = string
+  default     = ""
+}
+
+variable "ingest_audience" {
+  description = "OIDC audience shared by the ingest service's custom_audiences and the Pub/Sub push subscription; a constant agreed by both sides so PUBSUB_AUDIENCE does not depend on the service's own URL"
+  type        = string
+  default     = "experiment-go-ingest"
+}
+
+variable "ingest_cpu" {
+  description = "CPU for the ingest service; parsing is CPU-bound"
+  type        = string
+  default     = "2"
+}
+
+variable "ingest_memory" {
+  description = "Memory for the ingest service"
+  type        = string
+  default     = "1Gi"
+}

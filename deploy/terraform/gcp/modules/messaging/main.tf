@@ -14,8 +14,9 @@ resource "google_pubsub_topic" "source" {
 }
 
 data "google_pubsub_topic" "source" {
-  count = var.create_topic ? 0 : 1
-  name  = var.topic_name
+  count   = var.create_topic ? 0 : 1
+  name    = var.topic_name
+  project = var.topic_project != "" ? var.topic_project : null
 }
 
 resource "google_pubsub_topic" "dead_letter" {

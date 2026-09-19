@@ -21,4 +21,22 @@ locals {
   # Secrets the serverless platform injects as env vars: name => Secret Manager secret id.
   # Empty when serverless is off (the secret only exists while var.image is set).
   serverless_secret_env = var.image != "" ? { DATABASE_URL = google_secret_manager_secret.database_url[0].secret_id } : {}
+
+  # Environment for the ingest role. PUBSUB_AUDIENCE is the constant
+  # var.ingest_audience, not the ingest service's own URL: deriving it from
+  # module.ingest_service[0].url here would make the service's environment
+  # depend on the service's own output, a dependency cycle Terraform cannot
+  # resolve. The same constant is passed as the service's custom_audiences
+  # and as the messaging module's audience, so all three agree.
+  ingest_env = var.create_ingest && var.image != "" ? {
+    APP_ENV                     = "production"
+    LOG_FORMAT                  = "json"
+    ENABLE_INGEST_ENDPOINT      = "true"
+    PUBSUB_AUDIENCE             = var.ingest_audience
+    PUBSUB_PUSH_SERVICE_ACCOUNT = google_service_account.pubsub_push[0].email
+    BQ_PROJECT                  = var.project_id
+    BQ_DATASET                  = module.warehouse[0].dataset_id
+    BQ_TABLE                    = module.warehouse[0].table_id
+    QUARANTINE_BUCKET           = google_storage_bucket.quarantine[0].name
+  } : {}
 }

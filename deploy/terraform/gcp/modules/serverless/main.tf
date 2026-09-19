@@ -1,14 +1,26 @@
 # Dedicated runtime identity: only what the service needs, nothing the default
-# compute service account carries.
+# compute service account carries. Skipped when the caller supplies its own
+# service_account_email, e.g. one it also grants other IAM roles outside this
+# module before the service exists.
 resource "google_service_account" "run" {
+  count        = var.service_account_email == "" ? 1 : 0
   account_id   = "${var.name}-run"
   display_name = "${var.name} Cloud Run runtime"
+}
+
+locals {
+  # Whichever identity actually runs the service: the caller-supplied one, or
+  # the one created above when none is supplied. cloudsql.client and secret
+  # access follow this identity rather than always the internal SA, so a
+  # caller-supplied account gets exactly the grants it needs too.
+  service_account_email  = var.service_account_email != "" ? var.service_account_email : google_service_account.run[0].email
+  service_account_member = var.service_account_email != "" ? "serviceAccount:${var.service_account_email}" : google_service_account.run[0].member
 }
 
 resource "google_project_iam_member" "run_cloudsql" {
   project = var.project_id
   role    = "roles/cloudsql.client"
-  member  = google_service_account.run.member
+  member  = local.service_account_member
 }
 
 resource "google_secret_manager_secret_iam_member" "env" {
@@ -16,7 +28,7 @@ resource "google_secret_manager_secret_iam_member" "env" {
 
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
-  member    = google_service_account.run.member
+  member    = local.service_account_member
 }
 
 # Exists only while var.image is set (make run-deploy writes serverless.auto.tfvars,
@@ -29,19 +41,24 @@ resource "google_cloud_run_v2_service" "api" {
   # Disposable experiment service; the provider defaults this to true.
   deletion_protection = false
 
+  custom_audiences = var.custom_audiences
+
   template {
-    service_account                  = google_service_account.run.email
-    max_instance_request_concurrency = 80
+    service_account                  = local.service_account_email
+    max_instance_request_concurrency = var.concurrency
 
     scaling {
       min_instance_count = var.min_instances # 0 = scale to zero, cold starts when not idle
       max_instance_count = var.max_instances
     }
 
-    volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [var.cloudsql_connection_name]
+    dynamic "volumes" {
+      for_each = var.requires_database ? [1] : []
+      content {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = [var.cloudsql_connection_name]
+        }
       }
     }
 
@@ -59,9 +76,12 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
-      volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
+      dynamic "volume_mounts" {
+        for_each = var.requires_database ? [1] : []
+        content {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
       }
 
       dynamic "env" {
@@ -99,7 +119,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   lifecycle {
     precondition {
-      condition     = var.cloudsql_connection_name != ""
+      condition     = var.requires_database ? var.cloudsql_connection_name != "" : true
       error_message = "The serverless service requires the database (create_db = true). Tear down serverless before the database."
     }
   }
@@ -111,6 +131,7 @@ resource "google_cloud_run_v2_service" "api" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {
+  count    = var.allow_public_access ? 1 : 0
   name     = google_cloud_run_v2_service.api.name
   location = var.region
   role     = "roles/run.invoker"

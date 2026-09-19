@@ -13,6 +13,12 @@ variable "topic_name" {
   type        = string
 }
 
+variable "topic_project" {
+  description = "GCP project that owns the upstream topic, when it differs from project_id (e.g. another system's project); empty uses the provider's configured project"
+  type        = string
+  default     = ""
+}
+
 variable "create_topic" {
   description = "Create the topic here (development) instead of referencing one another system owns"
   type        = bool
