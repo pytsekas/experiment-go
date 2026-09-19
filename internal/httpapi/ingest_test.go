@@ -209,6 +209,38 @@ func TestIngestRejectsOversizeBody(t *testing.T) {
 	}
 }
 
+// errReadCloser is an io.ReadCloser whose Read always fails with err. It
+// simulates a transport-level failure while reading the request body — a
+// dropped connection, say — as distinct from the body simply being too
+// large: err is never an *http.MaxBytesError.
+type errReadCloser struct{ err error }
+
+func (e errReadCloser) Read([]byte) (int, error) { return 0, e.err }
+func (e errReadCloser) Close() error             { return nil }
+
+func TestIngestRetriesBodyReadFailure(t *testing.T) {
+	q := &stubQuarantine{}
+	// ingestFn is left nil: stubIngest.Ingest fails the test if the service
+	// is reached, since a body that was never successfully read cannot be
+	// turned into a consumption.Message.
+	svc := stubIngest{t: t}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/pubsub/consumption", nil)
+	req.Body = errReadCloser{err: errors.New("connection reset by peer")}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+
+	ingestRouter(t, svc, stubVerifier{}, q).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 — a body-read I/O failure is transient, not a poison payload", rec.Code)
+	}
+	if q.calls != 0 {
+		t.Error("a body that failed to read must not be quarantined: there is nothing to park")
+	}
+}
+
 func TestIngestRouteAbsentWhenDisabled(t *testing.T) {
 	h := NewRouter(Deps{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Tasks: stubService{t: t}})
 
