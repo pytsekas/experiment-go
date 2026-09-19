@@ -121,6 +121,19 @@ func TestLoadIngestRequiresItsSettings(t *testing.T) {
 }
 
 func TestLoadIngestMakesDatabaseOptional(t *testing.T) {
+	// Clear both ways a DSN can be composed: the direct DATABASE_URL and the
+	// POSTGRES_HOST path. This guard prevents inheriting the developer's own
+	// database configuration from leaking into the test.
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("POSTGRES_HOST", "")
+
+	// Invert the test: set a non-empty DATABASE_URL first, then prove the
+	// guard clears it. If t.Setenv("DATABASE_URL", "") below did not work,
+	// the DSN would be non-empty and the test would fail, proving the guard is
+	// sound rather than assuming it.
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+	t.Setenv("DATABASE_URL", "")
+
 	t.Setenv("ENABLE_INGEST_ENDPOINT", "true")
 	t.Setenv("PUBSUB_AUDIENCE", "https://ingest.example")
 	t.Setenv("PUBSUB_PUSH_SERVICE_ACCOUNT", "push@example.iam.gserviceaccount.com")
