@@ -4,6 +4,8 @@ package quarantine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -27,13 +29,23 @@ func NewGCS(ctx context.Context, bucket string) (*GCS, error) {
 	return &GCS{client: client, bucket: bucket}, nil
 }
 
-// ObjectName is the date-partitioned path a payload is stored under. The
-// message id is sanitized via allowlist: keep [A-Za-z0-9._-], replace other
-// bytes with _. A nanosecond timestamp ensures distinct ids cannot collide.
+// ObjectName is the date-partitioned path a payload is stored under. It
+// includes a SHA-256 digest of the raw message id to distinguish ids that
+// reduce to the same sanitised form. Distinct message ids always produce
+// distinct keys; the same id at the same instant produces the same key so
+// redeliveries overwrite themselves rather than accumulating duplicates; a
+// hostile id still cannot escape the date prefix.
 func ObjectName(now time.Time, messageID string) string {
+	digest := messageIDDigest(messageID)
 	safe := sanitizeID(messageID)
 
-	return fmt.Sprintf("%s/%s-%s.xml", now.UTC().Format("2006/01/02"), now.Format("150405.000000000"), safe)
+	return fmt.Sprintf("%s/%s-%s-%s.xml", now.UTC().Format("2006/01/02"), now.Format("150405.000000000"), digest, safe)
+}
+
+// messageIDDigest returns the first 8 hex characters of SHA-256(messageID).
+func messageIDDigest(messageID string) string {
+	h := sha256.Sum256([]byte(messageID))
+	return hex.EncodeToString(h[:])[0:8]
 }
 
 // sanitizeID reduces a messageID by allowlist: keep [A-Za-z0-9._-], replace

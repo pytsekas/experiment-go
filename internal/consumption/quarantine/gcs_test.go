@@ -8,10 +8,13 @@ import (
 
 func TestObjectNameFormat(t *testing.T) {
 	now := time.Date(2026, 9, 19, 14, 30, 45, 123456789, time.UTC)
-	got := ObjectName(now, "msg-1")
+	id := "msg-1"
+	got := ObjectName(now, id)
 
-	// Expected format: YYYY/MM/DD/HHmmss.nnnnnnnnn-safe.xml
-	want := "2026/09/19/143045.123456789-msg-1.xml"
+	// Expected format: YYYY/MM/DD/HHmmss.nnnnnnnnn-<digest>-<safe>.xml
+	// Digest is first 8 hex chars of SHA-256(id)
+	digest := messageIDDigest(id)
+	want := "2026/09/19/143045.123456789-" + digest + "-msg-1.xml"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -24,7 +27,7 @@ func TestObjectNameAdversarialClasses(t *testing.T) {
 	tests := []struct {
 		name string
 		id   string
-		// want is a suffix of the full path (after the timestamp prefix)
+		// want is the safe name portion (digest will be computed)
 		want string
 	}{
 		// Empty and whitespace
@@ -71,7 +74,8 @@ func TestObjectNameAdversarialClasses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ObjectName(now, tt.id)
-			want := datePrefix + tt.want
+			digest := messageIDDigest(tt.id)
+			want := datePrefix + digest + "-" + tt.want
 			if got != want {
 				t.Fatalf("got %q, want %q", got, want)
 			}
@@ -79,35 +83,48 @@ func TestObjectNameAdversarialClasses(t *testing.T) {
 	}
 }
 
-func TestObjectNameNoCollisions(t *testing.T) {
-	// Regression test: nanosecond timestamp prevents collisions.
-	// IDs that reduce to the same safe name must still be differentiated by timestamp.
-	now1 := time.Date(2026, 9, 19, 0, 0, 0, 1, time.UTC) // 1 nanosecond
-	now2 := time.Date(2026, 9, 19, 0, 0, 0, 2, time.UTC) // 2 nanoseconds
+func TestObjectNameDistinctIDsProduceDifferentKeys(t *testing.T) {
+	// Regression test: distinct message IDs always produce distinct keys,
+	// even if they reduce to the same safe name, because the digest
+	// distinguishes them at the same timestamp.
+	now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 
-	// These two IDs both reduce to "unknown" but should have different keys due to timestamp
-	key1 := ObjectName(now1, "..")
-	key2 := ObjectName(now2, "..")
-
-	if key1 == key2 {
-		t.Fatalf("same id at different times produced the same key: %q", key1)
+	// IDs that previously collided (all reduce to "unknown")
+	collidingIDs := []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"....",
+		"////",
+		"msg-1/",
 	}
 
-	// Verify the keys are different only in the timestamp, not the safe name
-	if !strings.HasSuffix(key1, "-unknown.xml") || !strings.HasSuffix(key2, "-unknown.xml") {
-		t.Fatalf("expected both to have -unknown.xml suffix")
+	keys := make(map[string][]string)
+	for _, id := range collidingIDs {
+		got := ObjectName(now, id)
+		keys[got] = append(keys[got], id)
 	}
 
-	// Different safe names at the same timestamp should produce different keys
-	key3 := ObjectName(now1, "msg-1")
-	key4 := ObjectName(now1, "msg-2")
-
-	if key3 == key4 {
-		t.Fatalf("different ids at same time produced the same key")
+	// Verify no collisions: each key maps to exactly one ID
+	for key, ids := range keys {
+		if len(ids) > 1 {
+			t.Fatalf("collision: ids %v produced the same key %q", ids, key)
+		}
 	}
+}
 
-	if !strings.HasSuffix(key3, "-msg-1.xml") || !strings.HasSuffix(key4, "-msg-2.xml") {
-		t.Fatalf("expected different safe names")
+func TestObjectNameIdempotence(t *testing.T) {
+	// Same ID at the same instant produces the same key, so a redelivery
+	// that fails identically overwrites itself rather than accumulating duplicates.
+	now := time.Date(2026, 9, 19, 12, 34, 56, 123456789, time.UTC)
+	id := "my-message-id"
+
+	key1 := ObjectName(now, id)
+	key2 := ObjectName(now, id)
+
+	if key1 != key2 {
+		t.Fatalf("same id at same time produced different keys: %q vs %q", key1, key2)
 	}
 }
 
