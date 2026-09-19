@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +99,64 @@ func TestESMPParseBatches(t *testing.T) {
 	for _, n := range sizes {
 		if n > 4 {
 			t.Fatalf("batch of %d exceeds batchRows=4 (sizes %v)", n, sizes)
+		}
+	}
+}
+
+// TestESMPParseLargeSingleSeriesBatches proves that a single TimeSeries with
+// far more points than batchRows is still streamed in bounded batches — the
+// regression this guards against decoded a whole TimeSeries (all its Points)
+// into memory before ever looking at batchRows, so this document shape is
+// exactly the one that used to defeat batching. The document is generated
+// here rather than committed as a fixture, since its size is the point.
+func TestESMPParseLargeSingleSeriesBatches(t *testing.T) {
+	const batchRows = 100
+	const points = 2*batchRows + 37 // deliberately not a multiple of batchRows
+
+	var doc strings.Builder
+	doc.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+	doc.WriteString(`<GL_MarketDocument xmlns="` + xmlfmt.ESMPNamespace + `">`)
+	doc.WriteString(`<mRID>doc-big</mRID><TimeSeries><mRID>ts-big</mRID><businessType>A04</businessType>`)
+	doc.WriteString(`<quantity_Measure_Unit.name>KWH</quantity_Measure_Unit.name>`)
+	doc.WriteString(`<MarketEvaluationPoint><mRID>EE-METER-BIG</mRID></MarketEvaluationPoint>`)
+	doc.WriteString(`<Period><timeInterval><start>2026-01-01T00:00Z</start><end>2026-01-02T00:00Z</end></timeInterval>`)
+	doc.WriteString(`<resolution>PT15M</resolution>`)
+	for i := 1; i <= points; i++ {
+		fmt.Fprintf(&doc, "<Point><position>%d</position><quantity>1</quantity></Point>", i)
+	}
+	doc.WriteString(`</Period></TimeSeries></GL_MarketDocument>`)
+
+	reg := consumption.NewRegistry()
+	xmlfmt.NewESMP(batchRows).Register(reg)
+
+	d := xml.NewDecoder(strings.NewReader(doc.String()))
+	p, root, err := reg.For(d)
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+
+	var (
+		total int
+		sizes []int
+	)
+	err = p.Parse(context.Background(), d, root, func(batch []consumption.Reading) error {
+		sizes = append(sizes, len(batch))
+		total += len(batch)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if total != points {
+		t.Fatalf("got %d readings, want %d", total, points)
+	}
+	if len(sizes) < 2 {
+		t.Fatalf("expected multiple batches for %d points at batchRows=%d, got sizes %v", points, batchRows, sizes)
+	}
+	for _, n := range sizes {
+		if n > batchRows {
+			t.Fatalf("batch of %d exceeds batchRows=%d (sizes %v)", n, batchRows, sizes)
 		}
 	}
 }

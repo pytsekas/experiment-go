@@ -47,26 +47,23 @@ func (p ESMP) Register(r *consumption.Registry) {
 	r.Register(ESMPNamespace, "GL_MarketDocument", p)
 }
 
-// esmpSeries mirrors the subset of a TimeSeries this service needs. Decoding
-// one series at a time keeps memory proportional to a series, not a document.
-type esmpSeries struct {
-	MRID         string `xml:"mRID"`
-	BusinessType string `xml:"businessType"`
-	Unit         string `xml:"quantity_Measure_Unit.name"`
-	Point        struct {
-		MRID string `xml:"mRID"`
-	} `xml:"MarketEvaluationPoint"`
-	Periods []struct {
-		TimeInterval struct {
-			Start string `xml:"start"`
-		} `xml:"timeInterval"`
-		Resolution string `xml:"resolution"`
-		Points     []struct {
-			Position int     `xml:"position"`
-			Quantity float64 `xml:"quantity"`
-			Quality  string  `xml:"quality"`
-		} `xml:"Point"`
-	} `xml:"Period"`
+// esmpMarketEvaluationPoint mirrors the small MarketEvaluationPoint child of
+// a TimeSeries. It is bounded, so decoding it whole is fine.
+type esmpMarketEvaluationPoint struct {
+	MRID string `xml:"mRID"`
+}
+
+// esmpTimeInterval mirrors a Period's timeInterval. Only Start is used.
+type esmpTimeInterval struct {
+	Start string `xml:"start"`
+}
+
+// esmpPoint mirrors one Point. It is decoded and turned into a reading one
+// at a time, so a Period's point count never bounds memory use.
+type esmpPoint struct {
+	Position int     `xml:"position"`
+	Quantity float64 `xml:"quantity"`
+	Quality  string  `xml:"quality"`
 }
 
 // Parse implements consumption.Parser.
@@ -109,61 +106,154 @@ func (p ESMP) Parse(ctx context.Context, d *xml.Decoder, _ xml.StartElement, emi
 			continue
 		}
 
-		var series esmpSeries
-		if err := d.DecodeElement(&series, &start); err != nil {
-			return fmt.Errorf("%w: decoding TimeSeries: %w", consumption.ErrMalformed, err)
-		}
-
-		if err := p.appendSeries(series, &batch, &total, flush); err != nil {
+		if err := p.parseTimeSeries(d, &batch, &total, flush); err != nil {
 			return err
 		}
 	}
 }
 
-// appendSeries turns one decoded series into readings, flushing whenever the
-// batch is full.
-func (p ESMP) appendSeries(s esmpSeries, batch *[]consumption.Reading, total *int, flush func() error) error {
-	meter := s.Point.MRID
-	if meter == "" {
-		meter = s.MRID
-	}
+// parseTimeSeries streams one TimeSeries element's children. Its scalar
+// fields (mRID, businessType, unit, MarketEvaluationPoint) are bounded and
+// held in memory; Period is handed off to parsePeriod so that a series'
+// Points never have to be materialised as a whole to be counted or batched.
+func (p ESMP) parseTimeSeries(d *xml.Decoder, batch *[]consumption.Reading, total *int, flush func() error) error {
+	var mrid, businessType, unit, meter string
 
-	for _, period := range s.Periods {
-		startTime, err := time.Parse(time.RFC3339, normaliseInstant(period.TimeInterval.Start))
+	for {
+		tok, err := d.Token()
 		if err != nil {
-			return fmt.Errorf("%w: period start %q: %w", consumption.ErrMalformed, period.TimeInterval.Start, err)
+			return fmt.Errorf("%w: decoding TimeSeries: %w", consumption.ErrMalformed, err)
 		}
 
-		resolution, err := parseResolution(period.Resolution)
-		if err != nil {
-			return err
-		}
-
-		for _, point := range period.Points {
-			if point.Position < 1 {
-				return fmt.Errorf("%w: point position %d must be positive", consumption.ErrMalformed, point.Position)
+		switch t := tok.(type) {
+		case xml.EndElement:
+			if t.Name.Local == "TimeSeries" {
+				return nil
 			}
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "mRID":
+				if err := d.DecodeElement(&mrid, &t); err != nil {
+					return fmt.Errorf("%w: decoding TimeSeries mRID: %w", consumption.ErrMalformed, err)
+				}
+			case "businessType":
+				if err := d.DecodeElement(&businessType, &t); err != nil {
+					return fmt.Errorf("%w: decoding businessType: %w", consumption.ErrMalformed, err)
+				}
+			case "quantity_Measure_Unit.name":
+				if err := d.DecodeElement(&unit, &t); err != nil {
+					return fmt.Errorf("%w: decoding unit: %w", consumption.ErrMalformed, err)
+				}
+			case "MarketEvaluationPoint":
+				var mep esmpMarketEvaluationPoint
+				if err := d.DecodeElement(&mep, &t); err != nil {
+					return fmt.Errorf("%w: decoding MarketEvaluationPoint: %w", consumption.ErrMalformed, err)
+				}
+				meter = mep.MRID
+			case "Period":
+				meterID := meter
+				if meterID == "" {
+					meterID = mrid
+				}
 
-			*total++
-			if *total > maxReadingsPerDocument {
-				return fmt.Errorf("%w: more than %d readings in one document", consumption.ErrMalformed, maxReadingsPerDocument)
-			}
-
-			*batch = append(*batch, consumption.Reading{
-				MeteringPointID: meter,
-				Start:           startTime.Add(time.Duration(point.Position-1) * resolution),
-				Resolution:      resolution,
-				Value:           point.Quantity,
-				Unit:            s.Unit,
-				Quality:         quality(point.Quality),
-				Direction:       direction(s.BusinessType),
-			})
-
-			if len(*batch) >= p.batchRows {
-				if err := flush(); err != nil {
+				if err := p.parsePeriod(d, meterID, businessType, unit, batch, total, flush); err != nil {
 					return err
 				}
+			default:
+				if err := d.Skip(); err != nil {
+					return fmt.Errorf("%w: skipping TimeSeries child %s: %w", consumption.ErrMalformed, t.Name.Local, err)
+				}
 			}
+		}
+	}
+}
+
+// parsePeriod streams one Period element's children: the small timeInterval
+// and resolution scalars, then each Point decoded and turned into a reading
+// one at a time, so memory stays proportional to a batch rather than to how
+// many points the period holds.
+func (p ESMP) parsePeriod(d *xml.Decoder, meter, businessType, unit string, batch *[]consumption.Reading, total *int, flush func() error) error {
+	var (
+		startTime  time.Time
+		resolution time.Duration
+	)
+
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return fmt.Errorf("%w: decoding Period: %w", consumption.ErrMalformed, err)
+		}
+
+		switch t := tok.(type) {
+		case xml.EndElement:
+			if t.Name.Local == "Period" {
+				return nil
+			}
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "timeInterval":
+				var interval esmpTimeInterval
+				if decErr := d.DecodeElement(&interval, &t); decErr != nil {
+					return fmt.Errorf("%w: decoding timeInterval: %w", consumption.ErrMalformed, decErr)
+				}
+
+				startTime, err = time.Parse(time.RFC3339, normaliseInstant(interval.Start))
+				if err != nil {
+					return fmt.Errorf("%w: period start %q: %w", consumption.ErrMalformed, interval.Start, err)
+				}
+			case "resolution":
+				var raw string
+				if decErr := d.DecodeElement(&raw, &t); decErr != nil {
+					return fmt.Errorf("%w: decoding resolution: %w", consumption.ErrMalformed, decErr)
+				}
+
+				resolution, err = parseResolution(raw)
+				if err != nil {
+					return err
+				}
+			case "Point":
+				var point esmpPoint
+				if err := d.DecodeElement(&point, &t); err != nil {
+					return fmt.Errorf("%w: decoding Point: %w", consumption.ErrMalformed, err)
+				}
+
+				if err := p.appendPoint(point, meter, businessType, unit, startTime, resolution, batch, total, flush); err != nil {
+					return err
+				}
+			default:
+				if err := d.Skip(); err != nil {
+					return fmt.Errorf("%w: skipping Period child %s: %w", consumption.ErrMalformed, t.Name.Local, err)
+				}
+			}
+		}
+	}
+}
+
+// appendPoint turns one decoded Point into a reading, flushing the batch
+// once it reaches batchRows.
+func (p ESMP) appendPoint(point esmpPoint, meter, businessType, unit string, startTime time.Time, resolution time.Duration, batch *[]consumption.Reading, total *int, flush func() error) error {
+	if point.Position < 1 {
+		return fmt.Errorf("%w: point position %d must be positive", consumption.ErrMalformed, point.Position)
+	}
+
+	*total++
+	if *total > maxReadingsPerDocument {
+		return fmt.Errorf("%w: more than %d readings in one document", consumption.ErrMalformed, maxReadingsPerDocument)
+	}
+
+	*batch = append(*batch, consumption.Reading{
+		MeteringPointID: meter,
+		Start:           startTime.Add(time.Duration(point.Position-1) * resolution),
+		Resolution:      resolution,
+		Value:           point.Quantity,
+		Unit:            unit,
+		Quality:         quality(point.Quality),
+		Direction:       direction(businessType),
+	})
+
+	if len(*batch) >= p.batchRows {
+		if err := flush(); err != nil {
+			return err
 		}
 	}
 
