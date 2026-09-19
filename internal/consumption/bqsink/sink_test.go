@@ -84,3 +84,49 @@ func TestReadingToValuesOrdersFieldsLikeTheSchema(t *testing.T) {
 		t.Errorf("got %d values for %d schema fields", len(got), len(TableSchema()))
 	}
 }
+
+func TestJoinCloseErrorsBothNil(t *testing.T) {
+	if err := joinCloseErrors(nil, nil); err != nil {
+		t.Fatalf("got %v, want nil", err)
+	}
+}
+
+func TestJoinCloseErrorsStreamOnly(t *testing.T) {
+	streamErr := errors.New("stream boom")
+
+	err := joinCloseErrors(streamErr, nil)
+	if err == nil {
+		t.Fatal("got nil, want an error")
+	}
+	if !errors.Is(err, streamErr) {
+		t.Errorf("got %v, want it to match the stream error", err)
+	}
+}
+
+func TestJoinCloseErrorsClientOnly(t *testing.T) {
+	clientErr := errors.New("client boom")
+
+	err := joinCloseErrors(nil, clientErr)
+	if err == nil {
+		t.Fatal("got nil, want an error")
+	}
+	if !errors.Is(err, clientErr) {
+		t.Errorf("got %v, want it to match the client error", err)
+	}
+}
+
+func TestJoinCloseErrorsBoth(t *testing.T) {
+	streamErr := errors.New("stream boom")
+	clientErr := errors.New("client boom")
+
+	err := joinCloseErrors(streamErr, clientErr)
+	if err == nil {
+		t.Fatal("got nil, want an error")
+	}
+	if !errors.Is(err, streamErr) {
+		t.Errorf("got %v, want it to match the stream error", err)
+	}
+	if !errors.Is(err, clientErr) {
+		t.Errorf("got %v, want it to match the client error", err)
+	}
+}

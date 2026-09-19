@@ -3,6 +3,7 @@ package bqsink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"cloud.google.com/go/bigquery/storage/managedwriter"
@@ -119,16 +120,27 @@ func (s *Sink) Write(ctx context.Context, readings []consumption.Reading) error 
 	return nil
 }
 
-// Close releases the stream and the client.
+// Close releases the stream and the client. Both are closed unconditionally
+// so a failure closing the stream can never leak the client.
 func (s *Sink) Close() error {
-	if err := s.stream.Close(); err != nil {
-		return fmt.Errorf("bqsink: closing stream: %w", err)
+	streamErr := s.stream.Close()
+	clientErr := s.client.Close()
+
+	return joinCloseErrors(streamErr, clientErr)
+}
+
+// joinCloseErrors wraps each non-nil close error with its own context and
+// joins them, so a caller can errors.Is either one out of the result. It
+// returns nil when both closes succeeded.
+func joinCloseErrors(streamErr, clientErr error) error {
+	if streamErr != nil {
+		streamErr = fmt.Errorf("bqsink: closing stream: %w", streamErr)
 	}
-	if err := s.client.Close(); err != nil {
-		return fmt.Errorf("bqsink: closing client: %w", err)
+	if clientErr != nil {
+		clientErr = fmt.Errorf("bqsink: closing client: %w", clientErr)
 	}
 
-	return nil
+	return errors.Join(streamErr, clientErr)
 }
 
 // classify marks the failures worth retrying. Anything else is permanent: a
