@@ -16,3 +16,8 @@ coverage.html
 .idea/
 .vscode/
 .DS_Store
+
+# OMC runtime state: session logs, caches and scan results, which churn on
+# every run. Project-scoped skills under .omc/skills/ stay committable.
+.omc/*
+!.omc/skills/
