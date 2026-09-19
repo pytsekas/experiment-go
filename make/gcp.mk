@@ -146,13 +146,22 @@ teardown-all: ## Delete everything billable on GCP (one terraform apply)
 	$(TF_APPLY)
 	@echo "left in place: APIs + Artifact Registry images (a few cents/month)"
 	@echo "  full wipe including the repo: $(TF) destroy $(TF_VARS)"
-	@echo "  ingest (if deployed) is NOT included — see deploy/README.md's Ingest phase"
+	@echo "  ingest (if deployed): the Cloud Run service, subscription, DLQ and topic are"
+	@echo "  gone too; the BigQuery dataset/table/view, quarantine bucket and service"
+	@echo "  accounts remain — see deploy/README.md's Ingest phase"
 
 ## ---------------------------------------------------------------- ingest
-# The readings table ships with deletion_protection = true (modules/warehouse),
-# so unlike create_db/create_k8s this layer has no teardown-* target yet:
-# teardown-all does not touch it. See deploy/README.md's Ingest phase for how
-# to remove it by hand.
+# Unlike create_db/create_k8s, this layer has no teardown-* target of its own —
+# but teardown-all still reaches most of it indirectly: removing
+# serverless.auto.tfvars clears var.image, and the ingest Cloud Run service,
+# its push subscription, the dead-letter topic/subscription and (since
+# ingest_create_topic defaults to true) the upstream topic are all gated on
+# create_ingest && image != "", so they are destroyed along with the app.
+# What survives is only what is gated on create_ingest alone: the BigQuery
+# dataset/table/view (the table also ships with deletion_protection = true),
+# the quarantine bucket, and the two service accounts — none of which costs
+# enough to bother removing by hand. See deploy/README.md's Ingest phase for
+# how to remove those too, if you want them gone.
 
 .PHONY: ingest-deploy
 ingest-deploy: ## Terraform: ingest service, Pub/Sub subscription and BigQuery dataset (needs image-push first)

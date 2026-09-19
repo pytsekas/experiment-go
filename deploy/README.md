@@ -218,12 +218,20 @@ partitioned by day and clustered by metering point and direction specifically so
 "this meter, this month" scans megabytes instead of the whole table; an ad-hoc `SELECT *`
 over the full history is the mistake that turns "negligible" into a bill.
 
-**Cleanup is manual for now.** `make teardown-all` does not touch anything behind
-`create_ingest` — the readings table ships with `deletion_protection = true` precisely so
-a blanket teardown cannot silently drop ingested data. Removing the ingest layer means
-`rm deploy/terraform/gcp/ingest.auto.tfvars`, then either turning `deletion_protection`
-off in `terraform/gcp/modules/warehouse/main.tf` before applying, or `terraform state rm`
-the resources you want out of future plans.
+**`make teardown-all` destroys most of the ingest path — it does not leave it alone.** It
+removes `serverless.auto.tfvars`, which clears `var.image`; the ingest Cloud Run service,
+the push subscription, the dead-letter topic and its subscription, and — because
+`ingest_create_topic` defaults to `true` — the upstream topic itself are all gated on
+`create_ingest && image != ""`, so a `teardown-all` after an `ingest-deploy` destroys all
+of them. What survives is only what is gated on `create_ingest` alone: the BigQuery
+dataset, the `readings` table (which also ships with `deletion_protection = true`) and
+the `readings_current` view, the quarantine bucket, and the two service accounts. None of
+that is worth chasing down: the storage is cents per million rows, the bucket already has
+a 90-day lifecycle rule, and service accounts are free. Removing it anyway means `rm
+deploy/terraform/gcp/ingest.auto.tfvars`, then either turning `deletion_protection` off in
+`terraform/gcp/modules/warehouse/main.tf` before applying, or `terraform state rm` the
+resources you want out of future plans. Re-running `make ingest-deploy` after a
+`teardown-all` recreates the service, subscription and topic from scratch.
 
 ## Phase 5 — GKE
 
