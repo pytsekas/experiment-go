@@ -44,6 +44,7 @@ make run     # run the API on the host with text logs and debug level
 | PUT    | `/api/v1/tasks/:id`  | Replace a task (`title` and `done`)           |
 | DELETE | `/api/v1/tasks/:id`  | Delete a task — 204                           |
 | GET    | `/api/v1/burn?ms=N`  | Burns CPU for N ms — only when `ENABLE_BURN_ENDPOINT=true` |
+| POST   | `/internal/pubsub/consumption` | Pub/Sub push: parse a consumption document into BigQuery — only when `ENABLE_INGEST_ENDPOINT=true` |
 
 ```bash
 curl -s localhost:8080/api/v1/tasks \
@@ -73,6 +74,7 @@ internal/logger/          slog setup (json|text, level from env)
 internal/database/        pgx connection pool
 internal/migrator/        golang-migrate as a library over the embedded SQL
 internal/task/            example domain: model, Service (business rules), Repository contract, Postgres impl
+internal/consumption/     ingest domain: readings, parser registry, service, BigQuery sink, quarantine
 internal/httpapi/         router, middleware, handlers, http.Server lifecycle
 migrations/               SQL files + embed.go (//go:embed *.sql)
 deploy/terraform/         Terraform: gcp/ and aws/ roots with the same contract (see deploy/terraform/README.md)
@@ -146,9 +148,17 @@ All configuration comes from the environment (see `.env.example`). `make up` and
 | `DB_CONNECT_TIMEOUT`     | `10s`         | Startup ping budget                        |
 | `MIGRATE_ON_START`       | `false`       | Apply migrations on boot; compose sets it  |
 | `ENABLE_BURN_ENDPOINT`   | `false`       | Exposes the CPU-burn endpoint for load tests |
+| `ENABLE_INGEST_ENDPOINT` | `false`       | Registers the Pub/Sub push route; on for the ingest service only |
+| `PUBSUB_AUDIENCE`        | —             | Expected OIDC `aud` claim — a constant shared with the Pub/Sub subscription, not the service's own URL |
+| `PUBSUB_PUSH_SERVICE_ACCOUNT` | —        | Expected OIDC token email claim            |
+| `BQ_PROJECT`             | —             | BigQuery project; empty uses the runtime project |
+| `BQ_DATASET` / `BQ_TABLE`| — / `readings`| Destination table for parsed readings      |
+| `QUARANTINE_BUCKET`      | —             | GCS bucket for permanently failed payloads |
+| `INGEST_BATCH_ROWS`      | `5000`        | Rows per BigQuery Storage Write append     |
 
 The service fails fast on startup if the configuration is invalid or Postgres is
-unreachable, so a bad deploy never reports itself as healthy.
+unreachable (Postgres is not required when `ENABLE_INGEST_ENDPOINT=true`), so a bad
+deploy never reports itself as healthy.
 
 ## Docker
 
@@ -246,11 +256,54 @@ golang-migrate, so swapping in [goose](https://github.com/pressly/goose) or
 [tern](https://github.com/jackc/tern) means rewriting one file — the SQL files and the
 `api migrate ...` interface stay as they are.
 
+## Ingest
+
+The same binary also runs a second role. An ENTSO-E ESMP consumption document arrives as
+a Pub/Sub push to `POST /internal/pubsub/consumption`, is streamed through a
+decoder-based parser whose memory stays proportional to one batch of readings rather than
+the whole document, and its readings are appended to BigQuery through the Storage Write
+API. A permanently invalid payload — one the parser rejects, or one Pub/Sub could not
+even deliver as valid JSON — is acknowledged (200) and parked in a GCS quarantine bucket
+under a key that includes a timestamp and a digest of the message id, instead of being
+retried forever. A transient storage failure replies 503 so Pub/Sub retries the delivery,
+and duplicate rows from a retry are resolved by the `readings_current` view rather than
+prevented at write time.
+
+One image serves both roles — the API and the ingest service are the same container,
+distinguished only by `ENABLE_INGEST_ENDPOINT` and the settings below it. The ingest role
+needs no database: `internal/config` makes Postgres optional once
+`ENABLE_INGEST_ENDPOINT=true`.
+
+| Variable                      | Default        | Notes                                    |
+| ------------------------------ | -------------- | ---------------------------------------- |
+| `ENABLE_INGEST_ENDPOINT`       | `false`        | Registers the push route. On for the ingest service only. |
+| `PUBSUB_AUDIENCE`              | —              | Expected OIDC `aud` claim — a constant shared with the Pub/Sub subscription, not the service's own URL |
+| `PUBSUB_PUSH_SERVICE_ACCOUNT`  | —              | Expected OIDC token email claim |
+| `BQ_PROJECT`                   | —              | BigQuery project; empty uses the runtime project |
+| `BQ_DATASET` / `BQ_TABLE`      | — / `readings` | Destination table for parsed readings |
+| `QUARANTINE_BUCKET`            | —              | GCS bucket for permanently failed payloads |
+| `INGEST_BATCH_ROWS`            | `5000`         | Rows per BigQuery Storage Write append |
+
+`PUBSUB_AUDIENCE`, `PUBSUB_PUSH_SERVICE_ACCOUNT`, `BQ_DATASET` and `QUARANTINE_BUCKET`
+must all be set once `ENABLE_INGEST_ENDPOINT=true` — the service fails fast at startup
+otherwise. `BQ_TABLE` defaults to `readings` and `BQ_PROJECT` to the runtime project.
+
+```bash
+make ingest-deploy                  # Terraform: ingest Cloud Run service, subscription, dataset
+make ingest-publish file=doc.xml    # publish one document to the upstream topic
+make ingest-smoke                   # publish the golden file and wait for its rows
+make bq-readings                    # query the deduplicated readings_current view
+```
+
+`deploy/README.md` has the full walkthrough: the dataset, the subscription and its
+dead-letter topic, the quarantine bucket, and what each of those costs.
+
 ## Google Cloud, AWS, Kubernetes and load tests
 
 `deploy/README.md` is a full walkthrough: Cloud SQL → Artifact Registry → Cloud Run →
-GKE → performance testing, with costs, teardown commands and the gotchas that actually
-bite, plus the same path on AWS (RDS → ECR → ECS Fargate → EKS). Infrastructure is
+ingest (Pub/Sub → BigQuery) → GKE → performance testing, with costs, teardown commands
+and the gotchas that actually bite, plus the same path on AWS (RDS → ECR → ECS Fargate →
+EKS). Infrastructure is
 Terraform in `deploy/terraform/`, one root per cloud with an identical variable and
 output contract so the setup can be reused for any container + database app. The
 short version:

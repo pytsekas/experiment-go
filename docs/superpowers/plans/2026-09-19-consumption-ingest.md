@@ -689,6 +689,18 @@ Expected: FAIL — `undefined: xmlfmt.NewESMP`.
 
 - [ ] **Step 4: Write the implementation**
 
+An earlier version of this step decoded each `TimeSeries` whole with one
+`d.DecodeElement(&series, &start)` into a struct holding every `Period` and
+`Point` as slices. That materialises an entire series — every point of every
+period — in memory before a single reading is produced, which defeats the
+design's memory bound (§1.4: memory proportional to one batch, not to the
+document). What was actually built streams one `Period` at a time and decodes
+each `Point` individually, so a series' point count never has to fit in
+memory at once. It relies on the ESMP schema's fixed element order (scalars
+before `Period`, `timeInterval`/`resolution` before `Point`) to know a field
+is complete as soon as a later sibling starts; a document that violates that
+order is rejected as malformed rather than guessed at.
+
 Create `internal/consumption/xmlfmt/esmp.go`:
 
 ```go
@@ -741,26 +753,23 @@ func (p ESMP) Register(r *consumption.Registry) {
 	r.Register(ESMPNamespace, "GL_MarketDocument", p)
 }
 
-// esmpSeries mirrors the subset of a TimeSeries this service needs. Decoding
-// one series at a time keeps memory proportional to a series, not a document.
-type esmpSeries struct {
-	MRID         string `xml:"mRID"`
-	BusinessType string `xml:"businessType"`
-	Unit         string `xml:"quantity_Measure_Unit.name"`
-	Point        struct {
-		MRID string `xml:"mRID"`
-	} `xml:"MarketEvaluationPoint"`
-	Periods []struct {
-		TimeInterval struct {
-			Start string `xml:"start"`
-		} `xml:"timeInterval"`
-		Resolution string `xml:"resolution"`
-		Points     []struct {
-			Position int     `xml:"position"`
-			Quantity float64 `xml:"quantity"`
-			Quality  string  `xml:"quality"`
-		} `xml:"Point"`
-	} `xml:"Period"`
+// esmpMarketEvaluationPoint mirrors the small MarketEvaluationPoint child of
+// a TimeSeries. It is bounded, so decoding it whole is fine.
+type esmpMarketEvaluationPoint struct {
+	MRID string `xml:"mRID"`
+}
+
+// esmpTimeInterval mirrors a Period's timeInterval. Only Start is used.
+type esmpTimeInterval struct {
+	Start string `xml:"start"`
+}
+
+// esmpPoint mirrors one Point. It is decoded and turned into a reading one
+// at a time, so a Period's point count never bounds memory use.
+type esmpPoint struct {
+	Position int     `xml:"position"`
+	Quantity float64 `xml:"quantity"`
+	Quality  string  `xml:"quality"`
 }
 
 // Parse implements consumption.Parser.
@@ -803,61 +812,216 @@ func (p ESMP) Parse(ctx context.Context, d *xml.Decoder, _ xml.StartElement, emi
 			continue
 		}
 
-		var series esmpSeries
-		if err := d.DecodeElement(&series, &start); err != nil {
-			return fmt.Errorf("%w: decoding TimeSeries: %w", consumption.ErrMalformed, err)
-		}
-
-		if err := p.appendSeries(series, &batch, &total, flush); err != nil {
+		if err := p.parseTimeSeries(d, &batch, &total, flush); err != nil {
 			return err
 		}
 	}
 }
 
-// appendSeries turns one decoded series into readings, flushing whenever the
-// batch is full.
-func (p ESMP) appendSeries(s esmpSeries, batch *[]consumption.Reading, total *int, flush func() error) error {
-	meter := s.Point.MRID
-	if meter == "" {
-		meter = s.MRID
-	}
+// parseTimeSeries streams one TimeSeries element's children. Its scalar
+// fields (mRID, businessType, unit, MarketEvaluationPoint) are bounded and
+// held in memory; Period is handed off to parsePeriod so that a series'
+// Points never have to be materialised as a whole to be counted or batched.
+//
+// The ESMP schema fixes this element order (the scalars, then Period), which
+// is what makes single-pass streaming possible at all. A document that
+// violates it is not a real ESMP document, so once a Period has been
+// processed, a later scalar is rejected rather than silently accepted and
+// misapplied to nothing.
+func (p ESMP) parseTimeSeries(d *xml.Decoder, batch *[]consumption.Reading, total *int, flush func() error) error {
+	var (
+		mrid, businessType, unit, meter string
+		periodSeen                      bool
+	)
 
-	for _, period := range s.Periods {
-		startTime, err := time.Parse(time.RFC3339, normaliseInstant(period.TimeInterval.Start))
+	for {
+		tok, err := d.Token()
 		if err != nil {
-			return fmt.Errorf("%w: period start %q: %w", consumption.ErrMalformed, period.TimeInterval.Start, err)
+			return fmt.Errorf("%w: decoding TimeSeries: %w", consumption.ErrMalformed, err)
 		}
 
-		resolution, err := parseResolution(period.Resolution)
-		if err != nil {
-			return err
-		}
-
-		for _, point := range period.Points {
-			if point.Position < 1 {
-				return fmt.Errorf("%w: point position %d must be positive", consumption.ErrMalformed, point.Position)
+		switch t := tok.(type) {
+		case xml.EndElement:
+			if t.Name.Local == "TimeSeries" {
+				return nil
 			}
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "mRID", "businessType", "quantity_Measure_Unit.name", "MarketEvaluationPoint":
+				if periodSeen {
+					return fmt.Errorf("%w: %s after Period in TimeSeries", consumption.ErrMalformed, t.Name.Local)
+				}
 
-			*total++
-			if *total > maxReadingsPerDocument {
-				return fmt.Errorf("%w: more than %d readings in one document", consumption.ErrMalformed, maxReadingsPerDocument)
-			}
+				switch t.Name.Local {
+				case "mRID":
+					if err := d.DecodeElement(&mrid, &t); err != nil {
+						return fmt.Errorf("%w: decoding TimeSeries mRID: %w", consumption.ErrMalformed, err)
+					}
+				case "businessType":
+					if err := d.DecodeElement(&businessType, &t); err != nil {
+						return fmt.Errorf("%w: decoding businessType: %w", consumption.ErrMalformed, err)
+					}
+				case "quantity_Measure_Unit.name":
+					if err := d.DecodeElement(&unit, &t); err != nil {
+						return fmt.Errorf("%w: decoding unit: %w", consumption.ErrMalformed, err)
+					}
+				case "MarketEvaluationPoint":
+					var mep esmpMarketEvaluationPoint
+					if err := d.DecodeElement(&mep, &t); err != nil {
+						return fmt.Errorf("%w: decoding MarketEvaluationPoint: %w", consumption.ErrMalformed, err)
+					}
+					meter = mep.MRID
+				}
+			case "Period":
+				periodSeen = true
+				meterID := meter
+				if meterID == "" {
+					meterID = mrid
+				}
 
-			*batch = append(*batch, consumption.Reading{
-				MeteringPointID: meter,
-				Start:           startTime.Add(time.Duration(point.Position-1) * resolution),
-				Resolution:      resolution,
-				Value:           point.Quantity,
-				Unit:            s.Unit,
-				Quality:         quality(point.Quality),
-				Direction:       direction(s.BusinessType),
-			})
-
-			if len(*batch) >= p.batchRows {
-				if err := flush(); err != nil {
+				if err := p.parsePeriod(d, meterID, businessType, unit, batch, total, flush); err != nil {
 					return err
 				}
+			default:
+				if err := d.Skip(); err != nil {
+					return fmt.Errorf("%w: skipping TimeSeries child %s: %w", consumption.ErrMalformed, t.Name.Local, err)
+				}
 			}
+		}
+	}
+}
+
+// parsePeriod streams one Period element's children: the small timeInterval
+// and resolution scalars, then each Point decoded and turned into a reading
+// one at a time, so memory stays proportional to a batch rather than to how
+// many points the period holds.
+//
+// Like parseTimeSeries, this depends on the ESMP schema's fixed order
+// (timeInterval, resolution, then Point*): once a Point has been processed,
+// a later timeInterval or resolution is rejected rather than silently
+// ignored, and the first Point requires meter/unit/start/resolution to
+// already be known — a document missing or misordering any of them is
+// malformed, not a document to guess at.
+func (p ESMP) parsePeriod(d *xml.Decoder, meter, businessType, unit string, batch *[]consumption.Reading, total *int, flush func() error) error {
+	var (
+		startTime          time.Time
+		resolution         time.Duration
+		haveStart, haveRes bool
+		pointSeen          bool
+	)
+
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return fmt.Errorf("%w: decoding Period: %w", consumption.ErrMalformed, err)
+		}
+
+		switch t := tok.(type) {
+		case xml.EndElement:
+			if t.Name.Local == "Period" {
+				return nil
+			}
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "timeInterval", "resolution":
+				if pointSeen {
+					return fmt.Errorf("%w: %s after Point in Period", consumption.ErrMalformed, t.Name.Local)
+				}
+
+				switch t.Name.Local {
+				case "timeInterval":
+					var interval esmpTimeInterval
+					if decErr := d.DecodeElement(&interval, &t); decErr != nil {
+						return fmt.Errorf("%w: decoding timeInterval: %w", consumption.ErrMalformed, decErr)
+					}
+
+					startTime, err = time.Parse(time.RFC3339, normaliseInstant(interval.Start))
+					if err != nil {
+						return fmt.Errorf("%w: period start %q: %w", consumption.ErrMalformed, interval.Start, err)
+					}
+					haveStart = true
+				case "resolution":
+					var raw string
+					if decErr := d.DecodeElement(&raw, &t); decErr != nil {
+						return fmt.Errorf("%w: decoding resolution: %w", consumption.ErrMalformed, decErr)
+					}
+
+					resolution, err = parseResolution(raw)
+					if err != nil {
+						return err
+					}
+					haveRes = true
+				}
+			case "Point":
+				if !pointSeen {
+					if err := requirePointContext(meter, unit, haveStart, haveRes); err != nil {
+						return err
+					}
+					pointSeen = true
+				}
+
+				var point esmpPoint
+				if err := d.DecodeElement(&point, &t); err != nil {
+					return fmt.Errorf("%w: decoding Point: %w", consumption.ErrMalformed, err)
+				}
+
+				if err := p.appendPoint(point, meter, businessType, unit, startTime, resolution, batch, total, flush); err != nil {
+					return err
+				}
+			default:
+				if err := d.Skip(); err != nil {
+					return fmt.Errorf("%w: skipping Period child %s: %w", consumption.ErrMalformed, t.Name.Local, err)
+				}
+			}
+		}
+	}
+}
+
+// requirePointContext checks that a Period's first Point has everything it
+// needs already parsed. Absence here means either a required field was
+// missing altogether, or it arrived after the Point that needed it — the
+// schema's fixed order makes those indistinguishable, and both are malformed
+// documents rather than something to guess at.
+func requirePointContext(meter, unit string, haveStart, haveRes bool) error {
+	switch {
+	case meter == "":
+		return fmt.Errorf("%w: first Point in Period has no metering point id", consumption.ErrMalformed)
+	case unit == "":
+		return fmt.Errorf("%w: first Point in Period has no unit", consumption.ErrMalformed)
+	case !haveStart:
+		return fmt.Errorf("%w: first Point in Period has no period start", consumption.ErrMalformed)
+	case !haveRes:
+		return fmt.Errorf("%w: first Point in Period has no resolution", consumption.ErrMalformed)
+	}
+
+	return nil
+}
+
+// appendPoint turns one decoded Point into a reading, flushing the batch
+// once it reaches batchRows.
+func (p ESMP) appendPoint(point esmpPoint, meter, businessType, unit string, startTime time.Time, resolution time.Duration, batch *[]consumption.Reading, total *int, flush func() error) error {
+	if point.Position < 1 {
+		return fmt.Errorf("%w: point position %d must be positive", consumption.ErrMalformed, point.Position)
+	}
+
+	*total++
+	if *total > maxReadingsPerDocument {
+		return fmt.Errorf("%w: more than %d readings in one document", consumption.ErrMalformed, maxReadingsPerDocument)
+	}
+
+	*batch = append(*batch, consumption.Reading{
+		MeteringPointID: meter,
+		Start:           startTime.Add(time.Duration(point.Position-1) * resolution),
+		Resolution:      resolution,
+		Value:           point.Quantity,
+		Unit:            unit,
+		Quality:         quality(point.Quality),
+		Direction:       direction(businessType),
+	})
+
+	if len(*batch) >= p.batchRows {
+		if err := flush(); err != nil {
+			return err
 		}
 	}
 
