@@ -21,6 +21,7 @@ type Config struct {
 	Logger   Logger
 	Migrate  Migrate
 	Features Features
+	Ingest   Ingest
 }
 
 // Features toggles optional endpoints.
@@ -28,6 +29,24 @@ type Features struct {
 	// BurnEndpoint exposes GET /api/v1/burn?ms=N, a deliberate CPU sink for
 	// autoscaling and load-test experiments. Never enable it in production.
 	BurnEndpoint bool
+}
+
+// Ingest holds the Pub/Sub push ingest settings. Everything but Enabled is
+// required once Enabled is true, and validate enforces that.
+type Ingest struct {
+	// Enabled registers POST /internal/pubsub/consumption. It is on for the
+	// ingest service and off for the API service, which is how one image
+	// serves both roles.
+	Enabled bool
+	// Audience is the expected `aud` claim: the ingest service's own URL.
+	Audience string
+	// PushServiceAccount is the expected token email claim.
+	PushServiceAccount string
+	BQProject          string // empty means the runtime project
+	BQDataset          string
+	BQTable            string
+	QuarantineBucket   string
+	BatchRows          int
 }
 
 // Migrate holds the schema migration settings.
@@ -102,6 +121,16 @@ func Load() (Config, error) {
 		Features: Features{
 			BurnEndpoint: envBool("ENABLE_BURN_ENDPOINT", false),
 		},
+		Ingest: Ingest{
+			Enabled:            envBool("ENABLE_INGEST_ENDPOINT", false),
+			Audience:           env("PUBSUB_AUDIENCE", ""),
+			PushServiceAccount: env("PUBSUB_PUSH_SERVICE_ACCOUNT", ""),
+			BQProject:          env("BQ_PROJECT", ""),
+			BQDataset:          env("BQ_DATASET", ""),
+			BQTable:            env("BQ_TABLE", "readings"),
+			QuarantineBucket:   env("QUARANTINE_BUCKET", ""),
+			BatchRows:          envInt("INGEST_BATCH_ROWS", 5000),
+		},
 	}
 
 	return cfg, cfg.validate()
@@ -111,7 +140,10 @@ func (c Config) validate() error {
 	if c.HTTP.Port < 1 || c.HTTP.Port > 65535 {
 		return fmt.Errorf("config: HTTP_PORT %d out of range", c.HTTP.Port)
 	}
-	if c.DB.DSN == "" {
+
+	// The ingest service has no reason to reach Postgres, so a database is
+	// required only when this process serves the API.
+	if !c.Ingest.Enabled && c.DB.DSN == "" {
 		return fmt.Errorf("config: DATABASE_URL (or POSTGRES_*) must be set")
 	}
 	if c.DB.MinConns > c.DB.MaxConns {
@@ -121,6 +153,36 @@ func (c Config) validate() error {
 	case "json", "text":
 	default:
 		return fmt.Errorf("config: LOG_FORMAT %q must be json or text", c.Logger.Format)
+	}
+	if err := c.Ingest.validate(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (i Ingest) validate() error {
+	if !i.Enabled {
+		return nil
+	}
+
+	for _, missing := range []struct {
+		key   string
+		value string
+	}{
+		{"PUBSUB_AUDIENCE", i.Audience},
+		{"PUBSUB_PUSH_SERVICE_ACCOUNT", i.PushServiceAccount},
+		{"BQ_DATASET", i.BQDataset},
+		{"BQ_TABLE", i.BQTable},
+		{"QUARANTINE_BUCKET", i.QuarantineBucket},
+	} {
+		if missing.value == "" {
+			return fmt.Errorf("config: %s must be set when ENABLE_INGEST_ENDPOINT is true", missing.key)
+		}
+	}
+
+	if i.BatchRows < 1 {
+		return fmt.Errorf("config: INGEST_BATCH_ROWS %d must be positive", i.BatchRows)
 	}
 
 	return nil
