@@ -98,8 +98,10 @@ func (h ingestHandler) consume(c *gin.Context) {
 	var envelope pushEnvelope
 	if err = json.Unmarshal(body, &envelope); err != nil {
 		// The envelope itself is broken, so there is no message id to file it
-		// under and nothing a retry could fix.
-		h.park(ctx, "", nil, "unparseable push envelope: "+err.Error())
+		// under and nothing a retry could fix. The body was already read in
+		// full above, and it is the only evidence of what arrived, so it is
+		// what gets quarantined — a nil payload here would keep nothing.
+		h.park(ctx, "", body, "unparseable push envelope: "+err.Error())
 		c.Status(http.StatusOK)
 
 		return

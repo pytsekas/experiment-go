@@ -32,7 +32,11 @@ func TestTableSchemaFieldsMatchTheDesign(t *testing.T) {
 }
 
 func TestClassifyTransient(t *testing.T) {
-	transient := []codes.Code{codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Internal}
+	// Canceled belongs here alongside the others: it fires when the request
+	// context is cancelled mid-append (an ordinary Cloud Run SIGTERM during
+	// scale-down), not because the payload is bad, so it must be retried
+	// rather than quarantined.
+	transient := []codes.Code{codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Internal, codes.Canceled}
 	for _, code := range transient {
 		err := classify(status.Error(code, "boom"))
 		if !errors.Is(err, consumption.ErrTransient) {

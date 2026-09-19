@@ -85,7 +85,10 @@ func (p ESMP) Parse(ctx context.Context, d *xml.Decoder, _ xml.StartElement, emi
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			// A cancelled context is an ordinary Cloud Run SIGTERM during
+			// scale-down or a caller deadline, not a bad document, so it
+			// must be retried rather than quarantined.
+			return fmt.Errorf("%w: parse cancelled: %w", consumption.ErrTransient, err)
 		}
 
 		tok, err := d.Token()

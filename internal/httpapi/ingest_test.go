@@ -38,14 +38,16 @@ var _ TokenVerifier = stubVerifier{}
 func (s stubVerifier) Verify(context.Context, string) error { return s.err }
 
 type stubQuarantine struct {
-	calls  int
-	reason string
-	err    error
+	calls   int
+	reason  string
+	payload []byte
+	err     error
 }
 
-func (s *stubQuarantine) Quarantine(_ context.Context, _ string, _ []byte, reason string) error {
+func (s *stubQuarantine) Quarantine(_ context.Context, _ string, payload []byte, reason string) error {
 	s.calls++
 	s.reason = reason
+	s.payload = payload
 
 	return s.err
 }
@@ -186,13 +188,20 @@ func TestIngestRetriesTransientFailures(t *testing.T) {
 
 func TestIngestQuarantinesUnparseableEnvelope(t *testing.T) {
 	q := &stubQuarantine{}
-	rec := postEnvelope(t, ingestRouter(t, stubIngest{t: t}, stubVerifier{}, q), "{not json")
+	body := "{not json"
+	rec := postEnvelope(t, ingestRouter(t, stubIngest{t: t}, stubVerifier{}, q), body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200", rec.Code)
 	}
 	if q.calls != 1 {
 		t.Fatalf("quarantine called %d times, want 1", q.calls)
+	}
+	// The body was already read in full before the envelope failed to parse,
+	// so it is the only evidence of what arrived: quarantining it with a nil
+	// payload would throw away the one thing worth keeping.
+	if string(q.payload) != body {
+		t.Fatalf("quarantined payload: got %q, want the raw request body %q", q.payload, body)
 	}
 }
 

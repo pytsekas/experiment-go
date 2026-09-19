@@ -151,7 +151,10 @@ func classify(err error) error {
 	}
 
 	switch status.Code(err) {
-	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Internal:
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Internal, codes.Canceled:
+		// Canceled fires when the request context is cancelled mid-append —
+		// an ordinary Cloud Run scale-down (SIGTERM) rather than a poison
+		// payload, so it must be retried, not treated as permanent.
 		return fmt.Errorf("%w: bigquery append: %w", consumption.ErrTransient, err)
 	default:
 		return fmt.Errorf("bigquery append: %w", err)

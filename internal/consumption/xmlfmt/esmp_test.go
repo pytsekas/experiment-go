@@ -275,6 +275,38 @@ func TestESMPParseStopsOnEmitError(t *testing.T) {
 	}
 }
 
+// TestESMPParseCancelledContextIsTransient covers a SIGTERM arriving during
+// Cloud Run scale-down: a cancelled context must produce a transient error so
+// the handler answers 503 and Pub/Sub redelivers, rather than quarantining a
+// document that was never actually malformed.
+func TestESMPParseCancelledContextIsTransient(t *testing.T) {
+	f, err := os.Open("testdata/esmp-valid.xml")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	reg := consumption.NewRegistry()
+	xmlfmt.NewESMP(5000).Register(reg)
+	d := xml.NewDecoder(f)
+	p, root, err := reg.For(d)
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = p.Parse(ctx, d, root, func([]consumption.Reading) error {
+		t.Fatal("emit must not be called once the context is already cancelled")
+
+		return nil
+	})
+	if !errors.Is(err, consumption.ErrTransient) {
+		t.Fatalf("got %v, want ErrTransient", err)
+	}
+}
+
 func BenchmarkESMPParse(b *testing.B) {
 	payload, err := os.ReadFile("testdata/esmp-valid.xml")
 	if err != nil {
