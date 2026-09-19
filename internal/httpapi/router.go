@@ -13,7 +13,10 @@ import (
 
 // Deps are the dependencies the router needs.
 type Deps struct {
-	Logger   *slog.Logger
+	Logger *slog.Logger
+	// Tasks may be nil: the ingest role runs this binary without a database,
+	// and the /api/v1/tasks group is then left unregistered rather than
+	// handed a nil service.
 	Tasks    task.Service
 	DB       Pinger // may be nil, readiness then only reports the process
 	Version  string
@@ -21,6 +24,12 @@ type Deps struct {
 	// EnableBurn exposes GET /api/v1/burn?ms=N, a deliberate CPU sink used for
 	// autoscaling and load-test experiments. Keep it off in production.
 	EnableBurn bool
+	// EnableIngest registers POST /internal/pubsub/consumption. It is on for
+	// the ingest service only; the API service must not expose it.
+	EnableIngest bool
+	Ingest       IngestService
+	Verifier     TokenVerifier
+	Quarantine   Quarantiner
 }
 
 // NewRouter builds the fully wired gin engine.
@@ -42,17 +51,29 @@ func NewRouter(d Deps) *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	{
-		tasks := taskHandler{svc: d.Tasks, log: d.Logger}
-		v1.GET("/tasks", tasks.list)
-		v1.POST("/tasks", tasks.create)
-		v1.GET("/tasks/:id", tasks.get)
-		v1.PUT("/tasks/:id", tasks.update)
-		v1.DELETE("/tasks/:id", tasks.remove)
+		// Tasks is nil for the ingest role, which runs without a database.
+		// Leaving the group unregistered there means a request falls through
+		// to NoRoute instead of reaching a handler holding a nil service.
+		if d.Tasks != nil {
+			tasks := taskHandler{svc: d.Tasks, log: d.Logger}
+			v1.GET("/tasks", tasks.list)
+			v1.POST("/tasks", tasks.create)
+			v1.GET("/tasks/:id", tasks.get)
+			v1.PUT("/tasks/:id", tasks.update)
+			v1.DELETE("/tasks/:id", tasks.remove)
+		}
 
+		// Burn does not depend on Tasks, so it is wired independently and
+		// still works on an ingest deployment that opts into it.
 		if d.EnableBurn {
 			d.Logger.Warn("burn endpoint enabled", slog.String("path", "/api/v1/burn"))
 			v1.GET("/burn", burnHandler{}.burn)
 		}
+	}
+
+	if d.EnableIngest {
+		ingest := ingestHandler{svc: d.Ingest, verifier: d.Verifier, quarantine: d.Quarantine, log: d.Logger}
+		r.POST("/internal/pubsub/consumption", ingest.consume)
 	}
 
 	r.NoRoute(func(c *gin.Context) {
