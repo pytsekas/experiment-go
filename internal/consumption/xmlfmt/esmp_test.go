@@ -171,6 +171,80 @@ func TestESMPParseMalformed(t *testing.T) {
 	}
 }
 
+// parseDoc runs the ESMP parser over an in-memory XML document, for tests
+// that need a document shape not worth committing as a testdata fixture.
+func parseDoc(t *testing.T, doc string, batchRows int) ([]consumption.Reading, error) {
+	t.Helper()
+
+	reg := consumption.NewRegistry()
+	xmlfmt.NewESMP(batchRows).Register(reg)
+
+	d := xml.NewDecoder(strings.NewReader(doc))
+	p, root, err := reg.For(d)
+	if err != nil {
+		return nil, err
+	}
+
+	var all []consumption.Reading
+	err = p.Parse(context.Background(), d, root, func(batch []consumption.Reading) error {
+		all = append(all, batch...)
+
+		return nil
+	})
+
+	return all, err
+}
+
+// TestESMPParseOutOfOrderIsMalformed covers the two ways a streamed decode
+// can be led astray by an out-of-order document: a series-level scalar
+// arriving after the Period that needed it, and a Period-level scalar
+// arriving after the Point that needed it. The ESMP schema fixes this
+// order, so a document that doesn't follow it is rejected rather than
+// silently misparsed (e.g. an A01 production series read as consumption
+// because businessType was never seen before Period ran).
+func TestESMPParseOutOfOrderIsMalformed(t *testing.T) {
+	tests := map[string]string{
+		"businessType after Period": `<?xml version="1.0" encoding="UTF-8"?>
+<GL_MarketDocument xmlns="` + xmlfmt.ESMPNamespace + `">
+  <mRID>doc-1</mRID>
+  <TimeSeries>
+    <mRID>ts-1</mRID>
+    <quantity_Measure_Unit.name>KWH</quantity_Measure_Unit.name>
+    <MarketEvaluationPoint><mRID>EE-METER-1</mRID></MarketEvaluationPoint>
+    <Period>
+      <timeInterval><start>2026-01-01T00:00Z</start><end>2026-01-01T01:00Z</end></timeInterval>
+      <resolution>PT15M</resolution>
+      <Point><position>1</position><quantity>10.5</quantity></Point>
+    </Period>
+    <businessType>A01</businessType>
+  </TimeSeries>
+</GL_MarketDocument>`,
+		"resolution after first Point": `<?xml version="1.0" encoding="UTF-8"?>
+<GL_MarketDocument xmlns="` + xmlfmt.ESMPNamespace + `">
+  <mRID>doc-1</mRID>
+  <TimeSeries>
+    <mRID>ts-1</mRID>
+    <businessType>A04</businessType>
+    <quantity_Measure_Unit.name>KWH</quantity_Measure_Unit.name>
+    <MarketEvaluationPoint><mRID>EE-METER-1</mRID></MarketEvaluationPoint>
+    <Period>
+      <timeInterval><start>2026-01-01T00:00Z</start><end>2026-01-01T01:00Z</end></timeInterval>
+      <Point><position>1</position><quantity>10.5</quantity></Point>
+      <resolution>PT15M</resolution>
+    </Period>
+  </TimeSeries>
+</GL_MarketDocument>`,
+	}
+
+	for name, doc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseDoc(t, doc, 5000); !errors.Is(err, consumption.ErrMalformed) {
+				t.Fatalf("got %v, want ErrMalformed", err)
+			}
+		})
+	}
+}
+
 func TestESMPParseStopsOnEmitError(t *testing.T) {
 	f, err := os.Open("testdata/esmp-valid.xml")
 	if err != nil {
