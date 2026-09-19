@@ -16,3 +16,12 @@ moved {
   from = google_service_account.run
   to   = google_service_account.run[0]
 }
+
+# google_project_iam_member.run_cloudsql gained a count so a database-free
+# caller (the ingest role) isn't granted a database role it will never use.
+# Every existing caller defaults requires_database to true, so this move
+# keeps the already-applied binding in place under its new indexed address.
+moved {
+  from = google_project_iam_member.run_cloudsql
+  to   = google_project_iam_member.run_cloudsql[0]
+}

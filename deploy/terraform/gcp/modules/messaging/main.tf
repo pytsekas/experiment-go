@@ -23,6 +23,18 @@ resource "google_pubsub_topic" "dead_letter" {
   name = "${var.name}-ingest-dlq"
 }
 
+# Pub/Sub signs the OIDC token it attaches to every push request as
+# push_service_account, which means Pub/Sub itself must be allowed to act as
+# that account. Without this, either apply fails validating the push config,
+# or the subscription is created but every push is rejected until deliveries
+# exhaust max_delivery_attempts and dead-letter — no message is ever
+# processed.
+resource "google_service_account_iam_member" "push_token_creator" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${var.push_service_account}"
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = local.pubsub_agent
+}
+
 resource "google_pubsub_subscription" "ingest" {
   name  = "${var.name}-ingest"
   topic = var.create_topic ? google_pubsub_topic.source[0].id : data.google_pubsub_topic.source[0].id
@@ -56,6 +68,7 @@ resource "google_pubsub_subscription" "ingest" {
 
   depends_on = [
     google_pubsub_topic_iam_member.dlq_publisher,
+    google_service_account_iam_member.push_token_creator,
   ]
 }
 

@@ -10,14 +10,18 @@ resource "google_service_account" "run" {
 
 locals {
   # Whichever identity actually runs the service: the caller-supplied one, or
-  # the one created above when none is supplied. cloudsql.client and secret
-  # access follow this identity rather than always the internal SA, so a
-  # caller-supplied account gets exactly the grants it needs too.
+  # the one created above when none is supplied. Secret access follows this
+  # identity rather than always the internal SA, so a caller-supplied
+  # account gets exactly the grants it needs too.
   service_account_email  = var.service_account_email != "" ? var.service_account_email : google_service_account.run[0].email
   service_account_member = var.service_account_email != "" ? "serviceAccount:${var.service_account_email}" : google_service_account.run[0].member
 }
 
+# Only granted when the service actually has a database: an account that
+# will never open a Cloud SQL connection has no business holding a
+# project-level database role.
 resource "google_project_iam_member" "run_cloudsql" {
+  count   = var.requires_database ? 1 : 0
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = local.service_account_member
