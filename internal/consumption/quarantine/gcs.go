@@ -28,19 +28,57 @@ func NewGCS(ctx context.Context, bucket string) (*GCS, error) {
 }
 
 // ObjectName is the date-partitioned path a payload is stored under. The
-// message id is reduced to its last path segment so a hostile id cannot
-// write outside the prefix.
+// message id is sanitized via allowlist: keep [A-Za-z0-9._-], replace other
+// bytes with _. A nanosecond timestamp ensures distinct ids cannot collide.
 func ObjectName(now time.Time, messageID string) string {
-	safe := messageID
-	if i := strings.LastIndex(safe, "/"); i >= 0 {
-		safe = safe[i+1:]
+	safe := sanitizeID(messageID)
+
+	return fmt.Sprintf("%s/%s-%s.xml", now.UTC().Format("2006/01/02"), now.Format("150405.000000000"), safe)
+}
+
+// sanitizeID reduces a messageID by allowlist: keep [A-Za-z0-9._-], replace
+// other bytes with _, strip leading/trailing underscores and dots, cap at 128 chars.
+func sanitizeID(id string) string {
+	var buf strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			buf.WriteRune(r)
+		} else {
+			buf.WriteRune('_')
+		}
 	}
-	safe = strings.ReplaceAll(safe, "..", "")
-	if strings.TrimSpace(safe) == "" {
+
+	safe := buf.String()
+
+	// Strip leading and trailing underscores and dots
+	safe = strings.Trim(safe, "_.")
+
+	// Cap at 128 characters
+	if len(safe) > 128 {
+		safe = safe[:128]
+	}
+
+	// Fall back if nothing survives
+	if safe == "" {
 		safe = "unknown"
 	}
 
-	return fmt.Sprintf("%s/%s.xml", now.UTC().Format("2006/01/02"), safe)
+	return safe
+}
+
+// sanitizeMetadata removes control characters from metadata values to prevent
+// embedded newlines, carriage returns, and other non-printable characters.
+func sanitizeMetadata(s string) string {
+	var buf strings.Builder
+	for _, r := range s {
+		// Keep printable ASCII (0x20-0x7E) and tab; replace everything else with _
+		if (r >= 0x20 && r <= 0x7E) || r == '\t' {
+			buf.WriteRune(r)
+		} else {
+			buf.WriteRune('_')
+		}
+	}
+	return buf.String()
 }
 
 // Quarantine stores payload and records why it was rejected in the object's
@@ -51,8 +89,8 @@ func (g *GCS) Quarantine(ctx context.Context, messageID string, payload []byte, 
 	w := object.NewWriter(ctx)
 	w.ContentType = "application/xml"
 	w.Metadata = map[string]string{
-		"message_id": messageID,
-		"reason":     reason,
+		"message_id": sanitizeMetadata(messageID),
+		"reason":     sanitizeMetadata(reason),
 	}
 
 	if _, err := w.Write(payload); err != nil {
