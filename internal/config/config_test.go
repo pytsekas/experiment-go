@@ -95,3 +95,68 @@ func TestLoadValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadIngestDefaultsOff(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Ingest.Enabled {
+		t.Error("ingest must be off unless enabled explicitly")
+	}
+	if cfg.Ingest.BatchRows != 5000 {
+		t.Errorf("BatchRows: got %d, want 5000", cfg.Ingest.BatchRows)
+	}
+}
+
+func TestLoadIngestRequiresItsSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+	t.Setenv("ENABLE_INGEST_ENDPOINT", "true")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error when the ingest endpoint is on but unconfigured")
+	}
+}
+
+func TestLoadIngestMakesDatabaseOptional(t *testing.T) {
+	// Clear both ways a DSN can be composed: the direct DATABASE_URL and the
+	// POSTGRES_HOST path. This guard prevents inheriting the developer's own
+	// database configuration from leaking into the test.
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("POSTGRES_HOST", "")
+
+	// Invert the test: set a non-empty DATABASE_URL first, then prove the
+	// guard clears it. If t.Setenv("DATABASE_URL", "") below did not work,
+	// the DSN would be non-empty and the test would fail, proving the guard is
+	// sound rather than assuming it.
+	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db")
+	t.Setenv("DATABASE_URL", "")
+
+	t.Setenv("ENABLE_INGEST_ENDPOINT", "true")
+	t.Setenv("PUBSUB_AUDIENCE", "https://ingest.example")
+	t.Setenv("PUBSUB_PUSH_SERVICE_ACCOUNT", "push@example.iam.gserviceaccount.com")
+	t.Setenv("BQ_DATASET", "energy")
+	t.Setenv("QUARANTINE_BUCKET", "experiment-go-quarantine")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DB.DSN != "" {
+		t.Errorf("DSN: got %q, want empty", cfg.DB.DSN)
+	}
+	if cfg.Ingest.BQTable != "readings" {
+		t.Errorf("BQTable: got %q, want readings", cfg.Ingest.BQTable)
+	}
+}
+
+func TestLoadDatabaseStillRequiredWithoutIngest(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("POSTGRES_HOST", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected the API service to still fail fast without a database")
+	}
+}

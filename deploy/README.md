@@ -11,7 +11,8 @@ target prints, so you can see what is actually happening.
 
 The order matters: Cloud SQL first (both compute options need it), then Cloud Run
 (deployed in two minutes, no cluster to reason about), then GKE (where the interesting
-experiments live).
+experiments live). Ingest (phase 4) is a separate, database-free path — Pub/Sub to
+BigQuery — and can be deployed independently of that ladder any time after phase 2.
 
 ```
                     ┌──────────────────────────┐
@@ -20,12 +21,15 @@ experiments live).
                     └──────────────────────────┘  │   ┌────────────────────────┐
                                                   ├──▶│ Cloud SQL Postgres     │
                     ┌──────────────────────────┐  │   │ db-f1-micro, zonal     │
-   phase 4/5        │ GKE (2 spot nodes)       │──┘   └────────────────────────┘
+   phase 5/6        │ GKE (2 spot nodes)       │──┘   └────────────────────────┘
                     │ api pods + proxy sidecar │
                     │ HPA 2..10, LB or forward │
                     └──────────────────────────┘
                               ▲
-   phase 6                    │ k6: local or as an in-cluster Job
+   phase 7                    │ k6: local or as an in-cluster Job
+
+   phase 4  Pub/Sub push ──▶ Cloud Run (ingest, no database) ──▶ BigQuery
+                              └─ permanent failures ──▶ GCS quarantine bucket
 ```
 
 ## Cost reality check
@@ -116,7 +120,7 @@ make smoke                                        # terminal 3
 > 25 connections total. `DB_MAX_CONNS × replicas` must stay under that, minus a couple for
 > your own psql sessions. The manifests ship `DB_MAX_CONNS=5`, so 10 HPA replicas = 50
 > connections = `FATAL: too many connections`. That is a genuinely useful failure to
-> trigger on purpose in phase 5.
+> trigger on purpose in phase 6.
 
 ## Phase 2 — push the image
 
@@ -168,7 +172,68 @@ the connection pool warming up.
 > The service runs as a dedicated service account and receives `DATABASE_URL` from Secret
 > Manager (`experiment-go-database-url`); nothing sensitive is in the revision's plain env.
 
-## Phase 4 — GKE
+## Phase 4 — Ingest: Pub/Sub to BigQuery
+
+A second, database-free Cloud Run service (`experiment-go-ingest`) receives a Pub/Sub
+push, streams the document through the ENTSO-E ESMP parser, and appends the readings to
+BigQuery. It shares the image with the API service — only its configuration differs —
+and runs as its own service account (`experiment-go-ingest`), separate from the one
+Pub/Sub signs its push requests with (`experiment-go-push`).
+
+```bash
+make image-push                     # if you have not already (Phase 2)
+make ingest-deploy                  # Terraform: dataset, quarantine bucket, ingest
+                                     # service, push subscription — behind create_ingest
+make ingest-smoke                   # publish the golden test file, poll until it lands
+make ingest-publish file=doc.xml    # publish any document to the topic
+make bq-readings                    # the deduplicated readings_current view
+```
+
+`ingest-deploy` writes `create_ingest = true` into an `.auto.tfvars` file the same way
+`sql-create` and `gke-create` do, so it composes with whatever else is already deployed.
+
+`ingest-smoke` publishes a copy of `internal/consumption/xmlfmt/testdata/esmp-valid.xml`
+with its metering point ids rewritten to a run-specific value, then polls BigQuery for up
+to 60 seconds. A failure here almost always means the push subscription's identity lacks
+`roles/run.invoker` on the ingest service, or the ingest service's own account lacks
+`roles/bigquery.dataEditor` — `gcloud run services logs read experiment-go-ingest` is the
+first place to look.
+
+A document the parser rejects, or one Pub/Sub could not even deliver as valid JSON, is
+acknowledged rather than retried forever, and its raw bytes land in the quarantine bucket
+instead:
+
+```bash
+gsutil ls gs://$(gcloud config get-value project 2>/dev/null)-experiment-go-quarantine/
+gsutil cp gs://<bucket>/<path>.xml .    # pull one down to inspect
+```
+
+Each object's metadata carries the message id and the rejection reason, so `gsutil stat`
+answers "why" without downloading the payload. The bucket has a 90-day lifecycle rule, so
+a persistent upstream defect cannot accumulate cost indefinitely on its own.
+
+**Cost.** BigQuery storage for interval data is a few cents per million rows —
+negligible at this volume. The number worth watching is query cost: the table is
+partitioned by day and clustered by metering point and direction specifically so that
+"this meter, this month" scans megabytes instead of the whole table; an ad-hoc `SELECT *`
+over the full history is the mistake that turns "negligible" into a bill.
+
+**`make teardown-all` destroys most of the ingest path — it does not leave it alone.** It
+removes `serverless.auto.tfvars`, which clears `var.image`; the ingest Cloud Run service,
+the push subscription, the dead-letter topic and its subscription, and — because
+`ingest_create_topic` defaults to `true` — the upstream topic itself are all gated on
+`create_ingest && image != ""`, so a `teardown-all` after an `ingest-deploy` destroys all
+of them. What survives is only what is gated on `create_ingest` alone: the BigQuery
+dataset, the `readings` table (which also ships with `deletion_protection = true`) and
+the `readings_current` view, the quarantine bucket, and the two service accounts. None of
+that is worth chasing down: the storage is cents per million rows, the bucket already has
+a 90-day lifecycle rule, and service accounts are free. Removing it anyway means `rm
+deploy/terraform/gcp/ingest.auto.tfvars`, then either turning `deletion_protection` off in
+`terraform/gcp/modules/warehouse/main.tf` before applying, or `terraform state rm` the
+resources you want out of future plans. Re-running `make ingest-deploy` after a
+`teardown-all` recreates the service, subscription and topic from scratch.
+
+## Phase 5 — GKE
 
 ```bash
 make gke-create      # zonal cluster, 2 spot e2-standard-2, autoscaling 1..4 (~5 min);
@@ -212,7 +277,7 @@ Service — concurrently. Without the pause, the load balancer keeps sending req
 server that already stopped accepting them. Prove it: run a load test, `kubectl rollout
 restart deploy/experiment-go`, and compare error counts with and without that hook.
 
-## Phase 5 — play with the cluster
+## Phase 6 — play with the cluster
 
 Run these while a load test is going (`make loadtest-load BASE_URL=... RATE=50 DURATION=10m`)
 and keep `make k8s-watch` open in another terminal.
@@ -255,7 +320,7 @@ node pool self-heal.
 if they are using 400m, the scheduler is packing them based on a fiction. Adjust requests
 to what you observe, redeploy, and see how many pods fit per node change.
 
-## Phase 6 — performance tests
+## Phase 7 — performance tests
 
 Three k6 scripts, all taking `BASE_URL`:
 

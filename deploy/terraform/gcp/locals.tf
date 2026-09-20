@@ -21,4 +21,31 @@ locals {
   # Secrets the serverless platform injects as env vars: name => Secret Manager secret id.
   # Empty when serverless is off (the secret only exists while var.image is set).
   serverless_secret_env = var.image != "" ? { DATABASE_URL = google_secret_manager_secret.database_url[0].secret_id } : {}
+
+  # Environment for the ingest role. PUBSUB_AUDIENCE is the constant
+  # var.ingest_audience, not the ingest service's own URL: deriving it from
+  # module.ingest_service[0].url here would make the service's environment
+  # depend on the service's own output, a dependency cycle Terraform cannot
+  # resolve. The same constant is passed as the service's custom_audiences
+  # and as the messaging module's audience, so all three agree.
+  # HTTP_READ_TIMEOUT/HTTP_WRITE_TIMEOUT raise the shared http.Server's
+  # defaults (10s/15s) to match the design's 60s ack deadline: the write
+  # timeout covers the whole read-parse-append-respond cycle, so it has to
+  # clear the ack deadline with room for a large document, not just equal it.
+  # The Cloud Run service's own request timeout is set above this in
+  # main.tf, or a large document's response would never leave the instance
+  # before Cloud Run itself cuts the request off.
+  ingest_env = var.create_ingest && var.image != "" ? {
+    APP_ENV                     = "production"
+    LOG_FORMAT                  = "json"
+    ENABLE_INGEST_ENDPOINT      = "true"
+    PUBSUB_AUDIENCE             = var.ingest_audience
+    PUBSUB_PUSH_SERVICE_ACCOUNT = google_service_account.pubsub_push[0].email
+    BQ_PROJECT                  = var.project_id
+    BQ_DATASET                  = module.warehouse[0].dataset_id
+    BQ_TABLE                    = module.warehouse[0].table_id
+    QUARANTINE_BUCKET           = google_storage_bucket.quarantine[0].name
+    HTTP_READ_TIMEOUT           = "60s"
+    HTTP_WRITE_TIMEOUT          = "120s"
+  } : {}
 }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GL_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0">
+  <mRID>doc-1</mRID>
+  <TimeSeries>
+    <mRID>ts-1</mRID>
+    <businessType>A04</businessType>
+    <quantity_Measure_Unit.name>KWH</quantity_Measure_Unit.name>
+    <MarketEvaluationPoint>
+      <mRID>EE-METER-1</mRID>
+    </MarketEvaluationPoint>
+    <Period>
+      <timeInterval>
+        <start>2026-01-01T00:00Z</start>
+        <end>2026-01-01T01:00Z</end>
+      </timeInterval>
+      <resolution>PT7M</resolution>
+      <Point><position>1</position><quantity>10.5</quantity></Point>
+      <Point><position>2</position><quantity>11.0</quantity><quality>A03</quality></Point>
+      <Point><position>3</position><quantity>12.25</quantity></Point>
+      <Point><position>4</position><quantity>9.75</quantity></Point>
+    </Period>
+  </TimeSeries>
+</GL_MarketDocument>

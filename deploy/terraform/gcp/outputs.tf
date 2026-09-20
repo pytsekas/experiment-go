@@ -25,3 +25,18 @@ output "k8s_cluster_name" {
 output "k8s_credentials_command" {
   value = var.create_k8s ? "gcloud container clusters get-credentials ${module.kubernetes[0].cluster_name} --zone=${var.zone} --project=${var.project_id}" : null
 }
+
+output "ingest_url" {
+  description = "Ingest service URL (empty until create_ingest and image are set)"
+  value       = var.create_ingest && var.image != "" ? module.ingest_service[0].url : ""
+}
+
+output "ingest_subscription" {
+  description = "Push subscription feeding the ingest service (empty until create_ingest and image are set)"
+  value       = var.create_ingest && var.image != "" ? module.messaging[0].subscription : ""
+}
+
+output "readings_view" {
+  description = "Deduplicating BigQuery view to query (empty until create_ingest)"
+  value       = var.create_ingest ? "${var.project_id}.${module.warehouse[0].dataset_id}.${module.warehouse[0].view_id}" : ""
+}

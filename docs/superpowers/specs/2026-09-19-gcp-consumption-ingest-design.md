@@ -104,7 +104,10 @@ that flattens either produces numbers nobody can defend later.
 // Parser turns one document into batches of readings. The callback keeps memory
 // proportional to a batch rather than to the document.
 type Parser interface {
-	Parse(ctx context.Context, r io.Reader, emit func([]Reading) error) error
+	// Parse consumes the document whose root element has already been read
+	// from d. It calls emit once per batch; implementations must not retain
+	// the slice after emit returns, and must stop and return emit's error.
+	Parse(ctx context.Context, d *xml.Decoder, root xml.StartElement, emit func([]Reading) error) error
 }
 
 // Sink stores a batch. Implementations classify their errors (see §8).
@@ -112,6 +115,10 @@ type Sink interface {
 	Write(ctx context.Context, rows []Reading) error
 }
 ```
+
+The registry (§6) is what reads the document's root element; it hands the parser the
+same decoder and that already-read `xml.StartElement`, so no bytes are ever decoded
+twice.
 
 Sentinel errors, mapped to HTTP in §9:
 
