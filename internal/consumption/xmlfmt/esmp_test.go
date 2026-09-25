@@ -15,38 +15,14 @@ import (
 	"github.com/pytsekas/experiment-go/internal/consumption/xmlfmt"
 )
 
-// parseFile runs the ESMP parser over a testdata file and returns every
-// reading it emitted, plus the batch sizes it used.
+// parseFile runs the ESMP parser over a testdata file.
 func parseFile(t *testing.T, name string, batchRows int) ([]consumption.Reading, []int, error) {
 	t.Helper()
-
-	f, err := os.Open("testdata/" + name)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer f.Close()
 
 	reg := consumption.NewRegistry()
 	xmlfmt.NewESMP(batchRows).Register(reg)
 
-	d := xml.NewDecoder(f)
-	p, root, err := reg.For(d)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var (
-		all   []consumption.Reading
-		sizes []int
-	)
-	err = p.Parse(context.Background(), d, root, func(batch []consumption.Reading) error {
-		sizes = append(sizes, len(batch))
-		all = append(all, batch...)
-
-		return nil
-	})
-
-	return all, sizes, err
+	return parseFileWith(t, name, reg)
 }
 
 func TestESMPParseValid(t *testing.T) {
@@ -67,6 +43,7 @@ func TestESMPParseValid(t *testing.T) {
 		Unit:            "KWH",
 		Quality:         consumption.QualityMeasured,
 		Direction:       consumption.DirectionConsumption,
+		Measure:         consumption.MeasureGross,
 	}
 	if first != want {
 		t.Fatalf("first reading:\n got %+v\nwant %+v", first, want)

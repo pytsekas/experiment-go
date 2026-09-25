@@ -20,7 +20,7 @@ resource "google_bigquery_table" "readings" {
     field = "interval_start"
   }
 
-  clustering = ["metering_point_id", "direction"]
+  clustering = ["metering_point_id", "direction", "measure"]
 
   schema = jsonencode([
     { name = "metering_point_id", type = "STRING", mode = "REQUIRED" },
@@ -30,6 +30,10 @@ resource "google_bigquery_table" "readings" {
     { name = "unit", type = "STRING", mode = "REQUIRED" },
     { name = "quality", type = "STRING", mode = "REQUIRED" },
     { name = "direction", type = "STRING", mode = "REQUIRED" },
+    # gross is what the meter registered; net is the same interval after the
+    # source netted the directions. Sources do not net by subtraction, so net
+    # is carried as its own row rather than derived in SQL.
+    { name = "measure", type = "STRING", mode = "REQUIRED" },
     { name = "source_message_id", type = "STRING", mode = "REQUIRED" },
     { name = "ingested_at", type = "TIMESTAMP", mode = "REQUIRED" },
   ])
@@ -46,7 +50,7 @@ resource "google_bigquery_table" "readings_current" {
     query          = <<-SQL
       SELECT * EXCEPT(rn) FROM (
         SELECT *, ROW_NUMBER() OVER (
-          PARTITION BY metering_point_id, interval_start, direction
+          PARTITION BY metering_point_id, interval_start, direction, measure
           ORDER BY ingested_at DESC) AS rn
         FROM `${var.project_id}.${google_bigquery_dataset.readings.dataset_id}.${google_bigquery_table.readings.table_id}`
       ) WHERE rn = 1

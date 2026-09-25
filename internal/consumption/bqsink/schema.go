@@ -20,6 +20,7 @@ func TableSchema() bigquery.Schema {
 		{Name: "unit", Type: bigquery.StringFieldType, Required: true},
 		{Name: "quality", Type: bigquery.StringFieldType, Required: true},
 		{Name: "direction", Type: bigquery.StringFieldType, Required: true},
+		{Name: "measure", Type: bigquery.StringFieldType, Required: true},
 		{Name: "source_message_id", Type: bigquery.StringFieldType, Required: true},
 		{Name: "ingested_at", Type: bigquery.TimestampFieldType, Required: true},
 	}
@@ -36,6 +37,7 @@ func readingToValues(r consumption.Reading) map[string]any {
 		"unit":              r.Unit,
 		"quality":           r.Quality,
 		"direction":         r.Direction,
+		"measure":           r.Measure,
 		"source_message_id": r.SourceMessageID,
 		"ingested_at":       r.IngestedAt.UTC().UnixMicro(),
 	}

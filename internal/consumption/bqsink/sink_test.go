@@ -14,7 +14,7 @@ import (
 func TestTableSchemaFieldsMatchTheDesign(t *testing.T) {
 	want := []string{
 		"metering_point_id", "interval_start", "resolution_sec", "value",
-		"unit", "quality", "direction", "source_message_id", "ingested_at",
+		"unit", "quality", "direction", "measure", "source_message_id", "ingested_at",
 	}
 
 	schema := TableSchema()
@@ -73,6 +73,7 @@ func TestReadingToValuesOrdersFieldsLikeTheSchema(t *testing.T) {
 		Unit:            "kWh",
 		Quality:         consumption.QualityMeasured,
 		Direction:       consumption.DirectionConsumption,
+		Measure:         consumption.MeasureGross,
 		SourceMessageID: "m-1",
 		IngestedAt:      time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC),
 	}
@@ -83,6 +84,9 @@ func TestReadingToValuesOrdersFieldsLikeTheSchema(t *testing.T) {
 	}
 	if got["metering_point_id"] != "EE-1" {
 		t.Errorf("metering_point_id: got %v", got["metering_point_id"])
+	}
+	if got["measure"] != consumption.MeasureGross {
+		t.Errorf("measure: got %v, want gross", got["measure"])
 	}
 	if len(got) != len(TableSchema()) {
 		t.Errorf("got %d values for %d schema fields", len(got), len(TableSchema()))

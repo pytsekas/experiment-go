@@ -18,6 +18,7 @@ func validReading() consumption.Reading {
 		Unit:            "kWh",
 		Quality:         consumption.QualityMeasured,
 		Direction:       consumption.DirectionConsumption,
+		Measure:         consumption.MeasureGross,
 	}
 }
 
@@ -34,6 +35,7 @@ func TestReadingValidate(t *testing.T) {
 		"NaN value":           {mutate: func(r *consumption.Reading) { r.Value = math.NaN() }, wantErr: true},
 		"Inf value":           {mutate: func(r *consumption.Reading) { r.Value = math.Inf(1) }, wantErr: true},
 		"blank unit":          {mutate: func(r *consumption.Reading) { r.Unit = "" }, wantErr: true},
+		"blank measure":       {mutate: func(r *consumption.Reading) { r.Measure = "" }, wantErr: true},
 	}
 
 	for name, tc := range tests {

@@ -26,6 +26,19 @@ const (
 	DirectionProduction  = "production"
 )
 
+// Reading measure values. Gross is what the meter registered; net is the
+// same interval after the source netted the two directions against each
+// other. Formats that report only one of the two report gross.
+//
+// Net is a separate dimension rather than a derived column because sources
+// do not always net by subtraction: an EnergyAccount document can report
+// out=201.367 with netOut=71.917 for the same point, so net cannot be
+// recomputed from gross and has to be carried.
+const (
+	MeasureGross = "gross"
+	MeasureNet   = "net"
+)
+
 // ErrUnknownFormat means no parser is registered for a document's root element.
 var ErrUnknownFormat = errors.New("unknown document format")
 
@@ -48,6 +61,7 @@ type Reading struct {
 	Unit            string
 	Quality         string
 	Direction       string
+	Measure         string
 	SourceMessageID string
 	IngestedAt      time.Time
 }
@@ -67,6 +81,8 @@ func (r Reading) Validate() error {
 		return fmt.Errorf("%w: value is not finite", ErrInvalidReading)
 	case r.Unit == "":
 		return fmt.Errorf("%w: blank unit", ErrInvalidReading)
+	case r.Measure == "":
+		return fmt.Errorf("%w: blank measure", ErrInvalidReading)
 	}
 
 	return nil

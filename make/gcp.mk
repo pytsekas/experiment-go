@@ -203,5 +203,5 @@ ingest-smoke: ## Publish the golden file under a fresh run id and wait for its r
 .PHONY: bq-readings
 bq-readings: ## Query ingest's deduplicated readings view
 	bq --project_id=$(PROJECT_ID) query --nouse_legacy_sql \
-		"SELECT metering_point_id, interval_start, value, unit, quality, direction \
+		"SELECT metering_point_id, interval_start, value, unit, quality, direction, measure \
 		 FROM \`$(BQ_DATASET).readings_current\` ORDER BY interval_start DESC LIMIT 20"

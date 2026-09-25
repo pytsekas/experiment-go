@@ -11,9 +11,10 @@ are embedded in the binary and applied with golang-migrate as a library, logging
 `log/slog`, shutdown is graceful, and the whole developer workflow is driven from the
 `Makefile`. Cloud infrastructure is Terraform-managed with `make` wrappers.
 
-The same binary also runs a second role: `internal/consumption` streams an ENTSO-E ESMP
-energy-consumption document from a Pub/Sub push into BigQuery, with a GCS quarantine for
-permanently failed payloads. It shares the image and most of the code with the API; only
+The same binary also runs a second role: `internal/consumption` streams ENTSO-E market
+documents from a Pub/Sub push into BigQuery, with a GCS quarantine for
+permanently failed payloads. Two formats are registered: ESMP generation-and-load
+(`GL_MarketDocument`, 451-6) and energy account (`EnergyAccount_MarketDocument`, 451-4). It shares the image and most of the code with the API; only
 configuration (`ENABLE_INGEST_ENDPOINT` and friends) tells the two apart.
 
 This is a **Go project**. The Spring Boot / Java rules in the global `~/.claude/CLAUDE.md`
@@ -186,6 +187,21 @@ make aws-teardown-all
   file in `internal/httpapi`, register routes in `internal/httpapi/router.go`.
 - Business rules go in the service, SQL in the repository, HTTP mapping in the handler.
   Do not put validation that belongs to the domain into handlers or SQL.
+- New ingest document format: add one file to `internal/consumption/xmlfmt` implementing
+  `consumption.Parser` with a `Register` method, and register it in `cmd/api/main.go`.
+  Nothing else should need to change — the registry dispatches on root element plus
+  namespace. Normalise onto `consumption.Reading`; do not widen it for a single format.
+  Readings carry two dimensions: `Direction` (consumption/production) and `Measure`
+  (gross/net). Both are in the `readings_current` dedup key, so a new combination needs
+  no view change, but a new *column* does — `bqsink.TableSchema` and the Terraform
+  `warehouse` module schema must be changed together, and the integration test is what
+  proves they still agree. Deploy them in order: `terraform apply` the column first, then
+  push the image. The reverse order quarantines and acks every message until the column
+  exists, because a descriptor mismatch is `InvalidArgument`, which `classify` treats as
+  permanent. See `deploy/README.md` Phase 4.
+- Never derive a quantity the document states. Energy-account `netIn`/`netOut` are not
+  `max(in-out,0)`: real documents report `out=201.367` with `netOut=71.917`. An absent
+  quantity emits no row rather than a zero.
 - Schema changes are SQL migration pairs only. Use `make migrate-new`, write both `up` and
   `down`, keep the six-digit numbering. `internal/migrator/migrator_test.go` fails if a
   version lacks either file.

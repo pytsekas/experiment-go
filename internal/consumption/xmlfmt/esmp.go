@@ -15,12 +15,6 @@ import (
 // ESMPNamespace is the ENTSO-E generation-and-load document namespace.
 const ESMPNamespace = "urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0"
 
-// defaultBatchRows is used when NewESMP is given a non-positive size.
-const defaultBatchRows = 5000
-
-// maxReadingsPerDocument stops a crafted document from driving unbounded work.
-const maxReadingsPerDocument = 5_000_000
-
 // ESMP parses ENTSO-E ESMP market documents as a stream: it decodes one
 // TimeSeries at a time and never materialises the whole document.
 //
@@ -53,11 +47,6 @@ type esmpMarketEvaluationPoint struct {
 	MRID string `xml:"mRID"`
 }
 
-// esmpTimeInterval mirrors a Period's timeInterval. Only Start is used.
-type esmpTimeInterval struct {
-	Start string `xml:"start"`
-}
-
 // esmpPoint mirrors one Point. It is decoded and turned into a reading one
 // at a time, so a Period's point count never bounds memory use.
 type esmpPoint struct {
@@ -67,52 +56,8 @@ type esmpPoint struct {
 }
 
 // Parse implements consumption.Parser.
-func (p ESMP) Parse(ctx context.Context, d *xml.Decoder, _ xml.StartElement, emit func([]consumption.Reading) error) error {
-	batch := make([]consumption.Reading, 0, p.batchRows)
-	total := 0
-
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		if err := emit(batch); err != nil {
-			return err
-		}
-		batch = batch[:0]
-
-		return nil
-	}
-
-	for {
-		if err := ctx.Err(); err != nil {
-			// A cancelled context is an ordinary Cloud Run SIGTERM during
-			// scale-down or a caller deadline, not a bad document, so it
-			// must be retried rather than quarantined.
-			return fmt.Errorf("%w: parse cancelled: %w", consumption.ErrTransient, err)
-		}
-
-		tok, err := d.Token()
-		if err != nil {
-			// io.EOF without a closing root element is a truncated document.
-			return fmt.Errorf("%w: reading document: %w", consumption.ErrMalformed, err)
-		}
-
-		start, ok := tok.(xml.StartElement)
-		switch {
-		case !ok:
-			if end, isEnd := tok.(xml.EndElement); isEnd && end.Name.Local == "GL_MarketDocument" {
-				return flush()
-			}
-
-			continue
-		case start.Name.Local != "TimeSeries":
-			continue
-		}
-
-		if err := p.parseTimeSeries(d, &batch, &total, flush); err != nil {
-			return err
-		}
-	}
+func (p ESMP) Parse(ctx context.Context, d *xml.Decoder, root xml.StartElement, emit func([]consumption.Reading) error) error {
+	return streamDocument(ctx, d, root, p.batchRows, emit, p.parseTimeSeries)
 }
 
 // parseTimeSeries streams one TimeSeries element's children. Its scalar
@@ -227,7 +172,7 @@ func (p ESMP) parsePeriod(d *xml.Decoder, meter, businessType, unit string, batc
 
 				switch t.Name.Local {
 				case "timeInterval":
-					var interval esmpTimeInterval
+					var interval timeIntervalStart
 					if decErr := d.DecodeElement(&interval, &t); decErr != nil {
 						return fmt.Errorf("%w: decoding timeInterval: %w", consumption.ErrMalformed, decErr)
 					}
@@ -274,31 +219,12 @@ func (p ESMP) parsePeriod(d *xml.Decoder, meter, businessType, unit string, batc
 	}
 }
 
-// requirePointContext checks that a Period's first Point has everything it
-// needs already parsed. Absence here means either a required field was
-// missing altogether, or it arrived after the Point that needed it — the
-// schema's fixed order makes those indistinguishable, and both are malformed
-// documents rather than something to guess at.
-func requirePointContext(meter, unit string, haveStart, haveRes bool) error {
-	switch {
-	case meter == "":
-		return fmt.Errorf("%w: first Point in Period has no metering point id", consumption.ErrMalformed)
-	case unit == "":
-		return fmt.Errorf("%w: first Point in Period has no unit", consumption.ErrMalformed)
-	case !haveStart:
-		return fmt.Errorf("%w: first Point in Period has no period start", consumption.ErrMalformed)
-	case !haveRes:
-		return fmt.Errorf("%w: first Point in Period has no resolution", consumption.ErrMalformed)
-	}
-
-	return nil
-}
-
 // appendPoint turns one decoded Point into a reading, flushing the batch
 // once it reaches batchRows.
 func (p ESMP) appendPoint(point esmpPoint, meter, businessType, unit string, startTime time.Time, resolution time.Duration, batch *[]consumption.Reading, total *int, flush func() error) error {
-	if point.Position < 1 {
-		return fmt.Errorf("%w: point position %d must be positive", consumption.ErrMalformed, point.Position)
+	start, err := intervalStart(startTime, point.Position, resolution)
+	if err != nil {
+		return err
 	}
 
 	*total++
@@ -308,12 +234,13 @@ func (p ESMP) appendPoint(point esmpPoint, meter, businessType, unit string, sta
 
 	*batch = append(*batch, consumption.Reading{
 		MeteringPointID: meter,
-		Start:           startTime.Add(time.Duration(point.Position-1) * resolution),
+		Start:           start,
 		Resolution:      resolution,
 		Value:           point.Quantity,
 		Unit:            unit,
 		Quality:         quality(point.Quality),
 		Direction:       direction(businessType),
+		Measure:         consumption.MeasureGross,
 	})
 
 	if len(*batch) >= p.batchRows {
@@ -323,36 +250,6 @@ func (p ESMP) appendPoint(point esmpPoint, meter, businessType, unit string, sta
 	}
 
 	return nil
-}
-
-// normaliseInstant turns the minute-precision instants ESMP uses
-// ("2026-01-01T00:00Z") into something time.RFC3339 accepts.
-func normaliseInstant(s string) string {
-	if len(s) == len("2006-01-02T15:04Z") && s[len(s)-1] == 'Z' {
-		return s[:len(s)-1] + ":00Z"
-	}
-
-	return s
-}
-
-// parseResolution maps the resolutions ESMP allows. A closed set is both
-// faster and stricter than a general ISO-8601 duration parser: anything else
-// is a document this service must not guess at.
-func parseResolution(s string) (time.Duration, error) {
-	switch s {
-	case "PT15M":
-		return 15 * time.Minute, nil
-	case "PT30M":
-		return 30 * time.Minute, nil
-	case "PT60M", "PT1H":
-		return time.Hour, nil
-	case "P1D":
-		return 24 * time.Hour, nil
-	case "P7D":
-		return 7 * 24 * time.Hour, nil
-	}
-
-	return 0, fmt.Errorf("%w: unsupported resolution %q", consumption.ErrMalformed, s)
 }
 
 // quality maps ESMP quality codes onto the canonical vocabulary.

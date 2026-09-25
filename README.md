@@ -258,7 +258,7 @@ golang-migrate, so swapping in [goose](https://github.com/pressly/goose) or
 
 ## Ingest
 
-The same binary also runs a second role. An ENTSO-E ESMP consumption document arrives as
+The same binary also runs a second role. An ENTSO-E market document arrives as
 a Pub/Sub push to `POST /internal/pubsub/consumption`, is streamed through a
 decoder-based parser whose memory stays proportional to one batch of readings rather than
 the whole document, and its readings are appended to BigQuery through the Storage Write
@@ -268,6 +268,44 @@ under a key that includes a timestamp and a digest of the message id, instead of
 retried forever. A transient storage failure replies 503 so Pub/Sub retries the delivery,
 and duplicate rows from a retry are resolved by the `readings_current` view rather than
 prevented at write time.
+
+### Document formats
+
+A registry maps a document's root element to the parser that understands it, so a new
+format is a new file in `internal/consumption/xmlfmt` plus one line in `cmd/api/main.go`.
+A document whose root element matches nothing registered is quarantined, not retried.
+
+| Root element | Namespace | Parser |
+| --- | --- | --- |
+| `GL_MarketDocument` | `…451-6:generationloaddocument:3:0` | `xmlfmt.ESMP` |
+| `EnergyAccount_MarketDocument` | `…451-4:energyaccountdocument:4:0` | `xmlfmt.EnergyAccount` |
+
+### The reading model
+
+Every format normalises onto one `Reading` row per quantity, keyed by metering point and
+interval and distinguished by two dimensions:
+
+- `direction` — `consumption` or `production`.
+- `measure` — `gross` (what the meter registered) or `net` (the same interval after the
+  source netted the two directions against each other).
+
+ESMP states one quantity per point and is always `gross`. An energy-account point states
+up to four — `in`/`out` and `netIn`/`netOut` — and becomes up to four rows. The netted
+pair is carried rather than recomputed in SQL because sources do not net by subtraction:
+a real document reports `out=201.367` alongside `netOut=71.917` for the same point. A
+quantity the document omits produces no row, so a point stating only the netted pair does
+not gain fabricated gross zeros.
+
+Both dimensions are in the `readings_current` view's dedup key, so gross and net rows for
+one interval coexist rather than overwrite each other.
+
+One caveat, because the view cannot currently express it: a document may state the same
+metering point and interval twice — three meters in the sample do, a full series plus a
+net-only restatement. `Service.Ingest` stamps a single `ingested_at` for the whole
+message, so those rows tie on the view's `ORDER BY` and which one it surfaces is
+unspecified. In the observed samples the restated values are identical, so the choice is
+invisible; if a source ever restates with *different* values, picking a winner needs a
+deterministic tie-break (a document-order column) that does not exist yet.
 
 One image serves both roles — the API and the ingest service are the same container,
 distinguished only by `ENABLE_INGEST_ENDPOINT` and the settings below it. The ingest role

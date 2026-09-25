@@ -133,6 +133,7 @@ func wireIngest(ctx context.Context, cfg config.Config, log *slog.Logger, deps *
 
 	registry := consumption.NewRegistry()
 	xmlfmt.NewESMP(cfg.Ingest.BatchRows).Register(registry)
+	xmlfmt.NewEnergyAccount(cfg.Ingest.BatchRows).Register(registry)
 
 	deps.EnableIngest = true
 	deps.Ingest = consumption.NewService(registry, sink, log)

@@ -44,6 +44,7 @@ func TestWriteRoundTrip(t *testing.T) {
 		Unit:            "kWh",
 		Quality:         consumption.QualityMeasured,
 		Direction:       consumption.DirectionConsumption,
+		Measure:         consumption.MeasureGross,
 		SourceMessageID: messageID,
 		IngestedAt:      time.Now().UTC(),
 	}

@@ -175,8 +175,9 @@ the connection pool warming up.
 ## Phase 4 — Ingest: Pub/Sub to BigQuery
 
 A second, database-free Cloud Run service (`experiment-go-ingest`) receives a Pub/Sub
-push, streams the document through the ENTSO-E ESMP parser, and appends the readings to
-BigQuery. It shares the image with the API service — only its configuration differs —
+push, streams the document through whichever ENTSO-E parser its root element selects —
+generation-and-load (`GL_MarketDocument`) or energy account (`EnergyAccount_MarketDocument`)
+— and appends the readings to BigQuery. It shares the image with the API service — only its configuration differs —
 and runs as its own service account (`experiment-go-ingest`), separate from the one
 Pub/Sub signs its push requests with (`experiment-go-push`).
 
@@ -214,9 +215,27 @@ a persistent upstream defect cannot accumulate cost indefinitely on its own.
 
 **Cost.** BigQuery storage for interval data is a few cents per million rows —
 negligible at this volume. The number worth watching is query cost: the table is
-partitioned by day and clustered by metering point and direction specifically so that
+partitioned by day and clustered by metering point, direction and measure specifically so that
 "this meter, this month" scans megabytes instead of the whole table; an ad-hoc `SELECT *`
 over the full history is the mistake that turns "negligible" into a bill.
+
+**Deploy a readings-schema change before the image that writes it.** The Storage Write
+API sends a proto descriptor built from `bqsink.TableSchema()`, and the managed stream is
+lazy — it does not check the table at startup, so a mismatch surfaces on the first
+append, not as a failed container start. `classify` in `internal/consumption/bqsink`
+treats `InvalidArgument` as permanent, and `internal/httpapi` answers a permanent failure
+with 200 plus a quarantine write. A new image reaching Cloud Run before `terraform apply`
+has added the column therefore **quarantines and acknowledges every message in that
+window**, silently. Run `terraform apply` first, then `make image-push` and the redeploy.
+The same window opens for a few minutes after a first apply while the
+`roles/bigquery.dataEditor` grant propagates, since `PermissionDenied` is classified the
+same way.
+
+**Adding a column to a populated readings table is not an in-place change.** BigQuery only
+allows new columns as `NULLABLE` or `REPEATED` once a table holds data, and every column
+in this schema is `REQUIRED`, so Terraform's `tables.patch` is rejected. Either add the
+column as `NULLABLE` and rely on the Go-side `Reading.Validate` to keep it populated, or
+recreate the table: set `deletion_protection = false`, export, apply, reload.
 
 **`make teardown-all` destroys most of the ingest path — it does not leave it alone.** It
 removes `serverless.auto.tfvars`, which clears `var.image`; the ingest Cloud Run service,
